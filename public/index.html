@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Motto Mouse</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="/assets/favicon.jpg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#/lookup" aria-label="Motto Mouse home">
+      <img class="brand__mouse" src="/assets/motto-mouse-logo-sm.jpg" alt="" width="44" height="44">
+      <img class="brand__logo" src="/assets/motto-logo.svg" alt="Motto">
+      <span class="brand__product">Mouse</span>
+    </a>
+    <nav class="header-actions" id="header-actions" hidden>
+      <a class="nav-link" href="#/lookup" data-nav="lookup">Lookup</a>
+      <a class="nav-link" href="#/mapping" data-nav="mapping">Mapping</a>
+      <a class="nav-link" href="#/settings" data-nav="settings">Settings</a>
+      <span class="header-user" id="header-user"></span>
+      <button class="link-button" id="logout-button" type="button">Sign out</button>
+    </nav>
+  </header>
+
+  <main id="app">
+    <!-- Sign in -->
+    <section class="login" id="login-view" hidden>
+      <div class="login__image" aria-hidden="true"></div>
+      <div class="login__panel">
+        <img class="login__mouse" src="/assets/motto-mouse-logo.jpg" alt="Motto Mouse logo" width="160" height="160">
+        <h1 class="h2">Motto Mouse</h1>
+        <p class="subdued">Product data for the Motto team. Sign in to continue.</p>
+        <form id="login-form" class="stack" novalidate>
+          <label class="field">
+            <span class="field__label">Username</span>
+            <input name="username" autocomplete="username" required>
+          </label>
+          <label class="field">
+            <span class="field__label">Password</span>
+            <input name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <p class="form-error" id="login-error" role="alert" hidden></p>
+          <button class="button button--block" type="submit">Sign in</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Lookup -->
+    <section class="page" id="lookup-view" hidden>
+      <h1 class="h2">Product lookup</h1>
+      <p class="subdued">Search by box number (e.g. B7018), PO number or pattern number. Separate up to 20 with commas, or paste a column from a spreadsheet, to look them up together.</p>
+      <form id="lookup-form" class="search" role="search">
+        <label class="visually-hidden" for="lookup-input">Box, PO or pattern numbers</label>
+        <input id="lookup-input" name="q" placeholder="B7018, B7019, 3788" autocomplete="off" spellcheck="false" maxlength="1000" required>
+        <button class="button" type="submit">Look up</button>
+      </form>
+
+      <p class="status" id="lookup-status" role="status" aria-live="polite"></p>
+      <div class="searching" id="lookup-searching" hidden>
+        <video src="/assets/mouse.mp4" muted loop playsinline preload="auto" disablepictureinpicture disableremoteplayback aria-hidden="true"></video>
+      </div>
+      <div class="empty-state" id="lookup-empty">
+        <img src="/assets/motto-mouse.jpg" alt="" width="160" height="160">
+        <p>Enter a box number and Motto Mouse will fetch everything Airtable knows about it.</p>
+      </div>
+      <div id="results"></div>
+      <div id="detail"></div>
+    </section>
+
+    <!-- Settings -->
+    <section class="page" id="settings-view" hidden>
+      <h1 class="h2">Settings</h1>
+      <p class="subdued">Choose which Airtable fields the product lookup shows. Fields are loaded live from the <span id="settings-table">BOX #S</span> table.</p>
+
+      <div class="settings-bar">
+        <input type="search" id="settings-filter" placeholder="Filter fields" aria-label="Filter fields">
+        <span class="settings-bar__count" id="settings-count"></span>
+        <div class="settings-bar__actions">
+          <button class="button button--ghost" type="button" id="settings-refresh">Refresh from Airtable</button>
+          <button class="button button--ghost" type="button" id="settings-reset">Reset to recommended</button>
+          <button class="button" type="button" id="settings-save" disabled>Save</button>
+        </div>
+      </div>
+      <p class="status" id="settings-status" role="status" aria-live="polite"></p>
+      <div id="settings-groups"></div>
+    </section>
+
+    <!-- Shopify mapping -->
+    <section class="page" id="mapping-view" hidden>
+      <h1 class="h2">Shopify mapping</h1>
+      <p class="subdued">Choose which Shopify product, variant or metafield each Airtable field from the <span id="mapping-table">BOX #S</span> table is written to, and how existing Shopify data is treated.</p>
+
+      <dl class="modes-legend">
+        <div><dt>Merge</dt><dd>Add to what's in Shopify, e.g. extra tags. Text is appended. Nothing is added twice.</dd></div>
+        <div><dt>Replace</dt><dd>Overwrite the Shopify value.</dd></div>
+        <div><dt>New</dt><dd>Only fill the field if it's empty in Shopify.</dd></div>
+      </dl>
+      <p class="notice" id="mapping-notice" hidden></p>
+
+      <div class="settings-bar">
+        <span class="settings-bar__count" id="mapping-count"></span>
+        <div class="settings-bar__actions">
+          <button class="button button--ghost" type="button" id="mapping-refresh">Refresh metafields</button>
+          <button class="button button--ghost" type="button" id="mapping-add">Add mapping</button>
+          <button class="button" type="button" id="mapping-save" disabled>Saved</button>
+        </div>
+      </div>
+      <p class="status" id="mapping-status" role="status" aria-live="polite"></p>
+      <div id="mapping-rows"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <img class="site-footer__mouse" src="/assets/motto-mouse-logo-sm.jpg" alt="" width="32" height="32">
+    <span>Motto Mouse &middot; Product data for the Motto team</span>
+  </footer>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
