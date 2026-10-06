@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
-import { applyMode, coerce, parseTarget, resolveTarget } from "./mapping.mjs";
+import { applyMode, coerce, jsonValue, parseTarget, resolveTarget } from "./mapping.mjs";
 import { nativeField } from "./shopify-fields.mjs";
 
 // Works out what a sync would change: applies the saved mappings to an Airtable record and compares the
 // result with what the Shopify product holds now. Nothing here talks to Shopify or Airtable.
 
-// Metafield types the value rules in mapping.mjs can produce. Others (dates, references, JSON, rich text) are skipped.
+// Metafield types the value rules in mapping.mjs can produce. Others (dates, references, rich text) are skipped.
 const METAFIELD_TYPES = new Set([
+  "json",
   "single_line_text_field",
   "multi_line_text_field",
   "url",
@@ -36,7 +37,7 @@ function current(subject, target) {
     const raw = subject.metafields[`${target.namespace}.${target.key}`]?.value;
     if (raw == null) return null;
     try {
-      if (target.kind === "list") return JSON.parse(raw);
+      if (target.kind === "list" || target.kind === "json") return JSON.parse(raw);
       if (target.kind === "money") return Number(JSON.parse(raw).amount).toFixed(2);
     } catch {
       return null;
@@ -61,18 +62,40 @@ function rejected(target, value) {
 
 // The string metafieldsSet expects for a value.
 function serialise(value, type, currency) {
-  if (type.startsWith("list.")) return JSON.stringify(value);
+  if (type.startsWith("list.") || type === "json") return JSON.stringify(value);
   if (type === "money") return JSON.stringify({ amount: value, currency_code: currency });
   return String(value);
 }
 
 function display(value) {
   if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) return null;
-  const s = Array.isArray(value) ? value.join(", ") : typeof value === "boolean" ? (value ? "Yes" : "No") : String(value);
+  const s = Array.isArray(value)
+    ? value.join(", ")
+    : typeof value === "boolean"
+      ? (value ? "Yes" : "No")
+      : typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value);
   return s.length > 400 ? `${s.slice(0, 400)}…` : s;
 }
 
 const distinct = (values) => [...new Set(values.map((v) => v ?? ""))].map((v) => v || null);
+
+// The object a JSON metafield gets from its mapped sources, plus why any of them were left out.
+function combine(sources) {
+  const object = {};
+  const reasons = [];
+  for (const source of sources) {
+    if (!source) {
+      reasons.push("The Airtable field no longer exists");
+      continue;
+    }
+    const value = jsonValue(source.value);
+    if (value !== undefined) object[source.name] = value;
+    else if (source.emptyReason) reasons.push(source.emptyReason);
+  }
+  return { object, reasons };
+}
 
 // ---------- Preview ----------
 // Returns { rows, changes, changeCount, fingerprint }.
@@ -89,9 +112,11 @@ export function buildPreview(record, product, mappings, definitions) {
   for (const [targetId, group] of byTarget) {
     const target = resolveTarget(targetId, definitions);
     const sources = group.map((m) => record.fields.find((f) => f.id === m.sourceFieldId));
+    // Set on mappings that come from builtin-mappings.mjs, which need a definition of a known type.
+    const builtin = group[0].builtin;
     const row = {
       target: targetId,
-      label: target?.label ?? targetId,
+      label: target?.label ?? builtin?.name ?? targetId,
       owner: parseTarget(targetId)?.owner ?? "product",
       sources: sources.map((s) => s?.name ?? "Missing Airtable field"),
       modes: group.map((m) => m.mode),
@@ -99,7 +124,12 @@ export function buildPreview(record, product, mappings, definitions) {
     const skip = (reason) => rows.push({ ...row, action: "skip", reason, current: [], next: [], changing: 0 });
 
     if (!target) {
-      skip("This Shopify field no longer exists");
+      const t = parseTarget(targetId);
+      skip(builtin ? `Create the metafield definition ${t.namespace}.${t.key} (${builtin.type}) in Shopify` : "This Shopify field no longer exists");
+      continue;
+    }
+    if (builtin && target.metafieldType !== builtin.type) {
+      skip(`${target.namespace}.${target.key} is a ${target.metafieldType} metafield in Shopify, and has to be ${builtin.type}`);
       continue;
     }
     if (target.type === "metafield" && !METAFIELD_TYPES.has(target.metafieldType)) {
@@ -107,28 +137,43 @@ export function buildPreview(record, product, mappings, definitions) {
       continue;
     }
 
+    // A JSON metafield holds its Airtable fields as one object, keyed by field name. Empty ones are left out.
+    const combined = target.kind === "json" ? combine(sources) : null;
+    if (combined) row.combined = { included: Object.keys(combined.object).length, of: group.length };
+
     const path = target.type === "native" ? nativeField(target.owner, target.key).path : null;
     const subjects = target.owner === "variant" ? product.variants : [product];
     const outcomes = subjects.map((subject) => {
       const before = current(subject, target);
-      // Several Airtable fields can feed one Shopify field (all in merge mode), so apply them in turn.
       let value = before;
       let changed = false;
       const reasons = [];
-      group.forEach((m, i) => {
-        if (!sources[i]) return reasons.push("The Airtable field no longer exists");
-        let incoming = coerce(sources[i].value, target.kind, target.choices);
-        if (incoming != null && target.key === "countryCodeOfOrigin") incoming = incoming.toUpperCase();
-        const problem = incoming == null ? null : rejected(target, incoming);
-        if (problem) return reasons.push(problem);
-        const result = applyMode(m.mode, target.kind, value, incoming);
-        if (result.action === "set") {
-          value = result.value;
-          changed = true;
-        } else if (result.action === "skip") {
-          reasons.push(result.reason);
+      if (combined) {
+        const result = applyMode(group[0].mode, "json", before, combined.object);
+        if (result.action !== "set") {
+          const empty = row.combined.included === 0;
+          return { before, after: before, action: result.action, reason: empty ? combined.reasons[0] ?? "The Airtable fields are empty" : result.reason };
         }
-      });
+        value = result.value;
+        changed = true;
+      } else {
+        // Several Airtable fields can feed any other Shopify field (all in merge mode), so apply them in turn.
+        group.forEach((m, i) => {
+          if (!sources[i]) return reasons.push("The Airtable field no longer exists");
+          let incoming = coerce(sources[i].value, target.kind, target.choices);
+          if (incoming == null && sources[i].emptyReason) return reasons.push(sources[i].emptyReason);
+          if (incoming != null && target.key === "countryCodeOfOrigin") incoming = incoming.toUpperCase();
+          const problem = incoming == null ? null : rejected(target, incoming);
+          if (problem) return reasons.push(problem);
+          const result = applyMode(m.mode, target.kind, value, incoming);
+          if (result.action === "set") {
+            value = result.value;
+            changed = true;
+          } else if (result.action === "skip") {
+            reasons.push(result.reason);
+          }
+        });
+      }
       if (!changed) return { before, after: before, action: reasons.length === group.length ? "skip" : "unchanged", reason: reasons[0] };
 
       changes.push({

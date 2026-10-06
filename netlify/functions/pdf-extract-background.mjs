@@ -1,8 +1,9 @@
 import { getSession } from "../lib/auth.mjs";
 import { BOX_TABLE_ID, getRecord } from "../lib/airtable.mjs";
 import { askAboutPdf, GeminiNotConfigured, GeminiQuotaExceeded, MODEL } from "../lib/gemini.mjs";
-import { EXTRACTS, MAX_PDF_BYTES, stripFences } from "../lib/pdf-extract.mjs";
+import { EXTRACTS, MAX_PDF_BYTES, promptHash, stripFences } from "../lib/pdf-extract.mjs";
 import { loadPdfExtractJob, savePdfExtractJob } from "../lib/pdf-extract-jobs.mjs";
+import { loadExtractPrompt, saveExtractResult } from "../lib/pdf-extract-store.mjs";
 
 export default async (req) => {
   const session = getSession(req);
@@ -36,21 +37,21 @@ export default async (req) => {
     const pdf = await response.arrayBuffer();
     logTiming(`attachment download completed bytes=${pdf.byteLength}`);
 
+    // The prompt is the one saved in Settings, read now so an edit applies to jobs already queued.
+    const { prompt } = await loadExtractPrompt(job.extract);
     logTiming(`gemini request started model=${MODEL}`);
-    const { text, usage, model } = await askAboutPdf(pdf, spec.prompt);
+    const { text, usage, model } = await askAboutPdf(pdf, prompt);
     logTiming(`gemini request completed model=${model} tokens=${usage?.totalTokenCount ?? "?"}`);
-    await savePdfExtractJob(jobId, {
-      ...job,
-      status: "done",
-      result: {
-        extract: job.extract,
-        label: spec.label,
-        filename: attachment.filename,
-        model,
-        markdown: stripFences(text),
-      },
-      completedAt: new Date().toISOString(),
-    });
+    const result = {
+      extract: job.extract,
+      label: spec.label,
+      filename: attachment.filename,
+      model,
+      markdown: stripFences(text),
+    };
+    // Kept per PDF so a Shopify sync can use it without reading the PDF again.
+    await saveExtractResult(job.extract, attachment.id, { ...result, promptHash: promptHash(prompt) });
+    await savePdfExtractJob(jobId, { ...job, status: "done", result, completedAt: new Date().toISOString() });
   } catch (err) {
     console.error(`[pdf-extract] error after ${Date.now() - started}ms`, err);
     const knownError = [

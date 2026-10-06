@@ -42,18 +42,23 @@ export async function findByVendor(pattern) {
     .map(summarise);
 }
 
-// Variant SKUs look like "9175_8" (number_size); `value` may be the number or a full SKU.
+// Variant SKUs look like "9175_8" (number_size). Airtable holds the part before the size, written "9175_".
+export function skuMatches(variantSku, value) {
+  const wanted = String(value).trim().toUpperCase().replace(/_+$/, "");
+  const sku = String(variantSku ?? "").toUpperCase();
+  return wanted !== "" && (sku === wanted || sku.startsWith(`${wanted}_`));
+}
+
 export async function findBySku(value) {
-  if (!/^[A-Za-z0-9._-]{1,40}$/.test(value)) return [];
+  const prefix = String(value).trim().replace(/_+$/, "");
+  if (!/^[A-Za-z0-9._-]{1,40}$/.test(prefix)) return [];
   const data = await graphql(
     `query VariantsBySku($q: String!) { productVariants(first: 50, query: $q) { nodes { sku product { ${SUMMARY} } } } }`,
-    { q: `sku:${value}*` }
+    { q: `sku:${prefix}*` }
   );
-  const wanted = value.toUpperCase();
   const products = new Map();
   for (const v of data.productVariants.nodes) {
-    const sku = (v.sku || "").toUpperCase();
-    if (sku === wanted || sku.startsWith(`${wanted}_`)) products.set(v.product.id, summarise(v.product));
+    if (skuMatches(v.sku, value)) products.set(v.product.id, summarise(v.product));
   }
   return [...products.values()];
 }
@@ -150,35 +155,28 @@ function setPath(obj, path, value) {
 
 const messages = (errors) => errors.map((e) => e.message).join("; ");
 
-// Applies changes built by buildPreview (sync.mjs). Returns a Map of change -> error message (null if saved).
-// The three kinds of change are separate Shopify requests, so one failing doesn't stop the others.
-export async function applyChanges(productId, changes) {
-  const results = new Map();
-  const attempt = async (group, run) => {
-    if (group.length === 0) return;
-    try {
-      const errors = await run();
-      for (const c of group) results.set(c, errors.length ? messages(errors) : null);
-    } catch (err) {
-      for (const c of group) results.set(c, err.message);
-    }
-  };
+// The Shopify requests that save the changes built by buildPreview (sync.mjs), without sending them.
+// Each is { name, query, variables, changes (the ones it carries), errors (reads userErrors from its response) }.
+export function buildRequests(productId, changes) {
+  const requests = [];
 
   const productNative = changes.filter((c) => c.type === "native" && c.owner === "product");
-  await attempt(productNative, async () => {
+  if (productNative.length) {
     const product = { id: productId };
     for (const c of productNative) setPath(product, c.path, c.value);
-    const data = await graphql(
-      `mutation ProductUpdate($product: ProductUpdateInput!) {
+    requests.push({
+      name: "productUpdate",
+      query: `mutation ProductUpdate($product: ProductUpdateInput!) {
         productUpdate(product: $product) { product { id } userErrors { field message } }
       }`,
-      { product }
-    );
-    return data.productUpdate.userErrors;
-  });
+      variables: { product },
+      changes: productNative,
+      errors: (data) => data.productUpdate.userErrors,
+    });
+  }
 
   const variantNative = changes.filter((c) => c.type === "native" && c.owner === "variant");
-  await attempt(variantNative, async () => {
+  if (variantNative.length) {
     const byId = new Map();
     for (const c of variantNative) {
       if (!byId.has(c.ownerId)) byId.set(c.ownerId, { id: c.ownerId });
@@ -186,30 +184,53 @@ export async function applyChanges(productId, changes) {
       // Weights are mapped in kilograms.
       if (c.path.endsWith("weight.value")) setPath(byId.get(c.ownerId), c.path.replace(/value$/, "unit"), "KILOGRAMS");
     }
-    const data = await graphql(
-      `mutation VariantsUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+    requests.push({
+      name: "productVariantsBulkUpdate",
+      query: `mutation VariantsUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkUpdate(productId: $productId, variants: $variants) { productVariants { id } userErrors { field message } }
       }`,
-      { productId, variants: [...byId.values()] }
-    );
-    return data.productVariantsBulkUpdate.userErrors;
-  });
+      variables: { productId, variants: [...byId.values()] },
+      changes: variantNative,
+      errors: (data) => data.productVariantsBulkUpdate.userErrors,
+    });
+  }
 
   // metafieldsSet takes 25 at a time and saves none of them if any one is rejected.
   const metafields = changes.filter((c) => c.type === "metafield");
   for (let i = 0; i < metafields.length; i += 25) {
     const chunk = metafields.slice(i, i + 25);
-    await attempt(chunk, async () => {
-      const data = await graphql(
-        `mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
-          metafieldsSet(metafields: $metafields) { metafields { id } userErrors { field message code } }
-        }`,
-        {
-          metafields: chunk.map((c) => ({ ownerId: c.ownerId, namespace: c.namespace, key: c.key, type: c.metafieldType, value: c.value })),
-        }
-      );
-      return data.metafieldsSet.userErrors;
+    requests.push({
+      name: "metafieldsSet",
+      query: `mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) { metafields { id } userErrors { field message code } }
+      }`,
+      variables: {
+        metafields: chunk.map((c) => ({ ownerId: c.ownerId, namespace: c.namespace, key: c.key, type: c.metafieldType, value: c.value })),
+      },
+      changes: chunk,
+      errors: (data) => data.metafieldsSet.userErrors,
     });
   }
-  return results;
+  return requests;
+}
+
+// Sends the requests for these changes. Returns { results, requests }: results is a Map of
+// change -> error message (null if saved); requests is what was sent, as { name, variables }.
+// One request failing doesn't stop the others. With `dryRun` nothing is sent to Shopify at all.
+export async function applyChanges(productId, changes, { dryRun = false } = {}) {
+  const results = new Map();
+  const requests = buildRequests(productId, changes);
+  for (const request of requests) {
+    let error = null;
+    if (!dryRun) {
+      try {
+        const errors = request.errors(await graphql(request.query, request.variables));
+        if (errors.length) error = messages(errors);
+      } catch (err) {
+        error = err.message;
+      }
+    }
+    for (const c of request.changes) results.set(c, error);
+  }
+  return { results, requests: requests.map(({ name, variables }) => ({ name, variables })) };
 }

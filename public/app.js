@@ -19,6 +19,7 @@ const state = {
   mapping: null, // { sources, targets, shopify, updatedAt, updatedBy } from /api/mappings
   mappingRows: [], // [{ id, sourceFieldId, target, mode }] being edited
   savedMappingRows: "[]",
+  prompts: null, // the PDF prompts from /api/pdf/prompts
   extracts: new Map(), // "recordId:attachmentId:extract" -> { status, markdown?, error? }, kept so redraws don't lose results
 };
 
@@ -41,8 +42,10 @@ function route() {
   if (!state.signedIn) return show("login");
   const view = currentRoute();
   show(view);
-  if (view === "settings") loadSettings();
-  else if (view === "mapping") loadMapping();
+  if (view === "settings") {
+    loadSettings();
+    loadPrompt();
+  } else if (view === "mapping") loadMapping();
   else $("#lookup-input").focus();
 }
 
@@ -50,7 +53,7 @@ function route() {
 window.addEventListener("hashchange", route);
 
 window.addEventListener("beforeunload", (e) => {
-  if (isDirty() || isMappingDirty()) e.preventDefault();
+  if (isDirty() || isMappingDirty() || isPromptDirty()) e.preventDefault();
 });
 
 async function api(path, options = {}) {
@@ -115,6 +118,7 @@ $("#logout-button").addEventListener("click", async () => {
   await fetch("/api/logout", { method: "POST" });
   state.signedIn = false;
   state.settings = null;
+  state.prompts = null;
   state.mapping = null;
   state.mappingRows = [];
   $("#results").replaceChildren();
@@ -256,15 +260,20 @@ async function lookupBatch(queries) {
   $("#detail").replaceChildren();
   // Shopify: preview every found row, then update the ones that are matched and have changes.
   const previewAll = el("button", { class: "button button--ghost button--small", type: "button" }, "Preview Shopify updates");
+  const dryRunAll = el("button", { class: "button button--ghost button--small", type: "button" }, "Dry run");
   const updateAll = el("button", { class: "button button--small", type: "button" }, "Update Shopify");
-  previewAll.disabled = updateAll.disabled = true;
+  previewAll.disabled = dryRunAll.disabled = updateAll.disabled = true;
   let syncing = true; // also true while the lookups themselves are still running
   const updatable = () => items.filter((i) => i.sync?.state().canUpdate);
+  const products = (n) => `${n} product${n === 1 ? "" : "s"}`;
   const refreshSyncButtons = () => {
     const n = updatable().length;
     previewAll.disabled = syncing;
-    updateAll.disabled = syncing || n === 0;
-    updateAll.textContent = n ? `Update ${n} product${n === 1 ? "" : "s"}` : "Update Shopify";
+    dryRunAll.disabled = updateAll.disabled = syncing || n === 0;
+    dryRunAll.textContent = n ? `Dry run ${products(n)}` : "Dry run";
+    updateAll.textContent = n ? `Update ${products(n)}` : "Update Shopify";
+    // In dry run mode the server won't write anything, so don't offer a real update.
+    updateAll.hidden = items.some((i) => i.sync?.state().dryRunOnly);
   };
   const forEachSync = async (rows, action) => {
     syncing = true;
@@ -277,9 +286,14 @@ async function lookupBatch(queries) {
     refreshSyncButtons();
   };
   previewAll.addEventListener("click", () => forEachSync(items.filter((i) => i.sync), (sync) => sync.load()));
+  dryRunAll.addEventListener("click", async () => {
+    const rows = updatable();
+    await forEachSync(rows, (sync) => sync.update({ dryRun: true }));
+    if (run === lookupRun) setStatus(`Dry run complete for ${products(rows.length)}. Nothing was written to Shopify; expand a row to see what would be sent.`);
+  });
   updateAll.addEventListener("click", () => {
     const rows = updatable();
-    if (!confirm(`Update ${rows.length} product${rows.length === 1 ? "" : "s"} in Shopify with the previewed changes?`)) return;
+    if (!confirm(`Update ${products(rows.length)} in Shopify with the previewed changes?`)) return;
     forEachSync(rows, (sync) => sync.update());
   });
 
@@ -294,7 +308,7 @@ async function lookupBatch(queries) {
   });
   const toolbar = el("div", { class: "batch__toolbar" }, [
     el("span", {}, [`${queries.length} values · showing fields chosen in `, el("a", { href: "#/settings" }, "Settings")]),
-    el("div", { class: "batch__actions" }, [previewAll, updateAll, toggleAll]),
+    el("div", { class: "batch__actions" }, [previewAll, dryRunAll, updateAll, toggleAll]),
   ]);
   $("#results").replaceChildren(el("div", { class: "batch" }, [toolbar, ...items.map((i) => i.node)]));
 
@@ -707,6 +721,85 @@ $("#settings-reset").addEventListener("click", async () => {
 
 $("#settings-refresh").addEventListener("click", () => loadSettings({ refresh: true }));
 
+// ---------- Settings: PDF prompt ----------
+// The page edits the tech pack prompt, which is the only extract there is.
+const PROMPT_EXTRACT = "tech-pack";
+const savedPrompt = () => state.prompts?.extracts.find((x) => x.id === PROMPT_EXTRACT) ?? null;
+
+function isPromptDirty() {
+  const saved = savedPrompt();
+  return Boolean(saved) && $("#prompt-text").value.trim() !== saved.prompt;
+}
+
+function setPromptStatus(text, kind = "") {
+  const s = $("#prompt-status");
+  s.textContent = text;
+  s.className = `status${kind ? ` status--${kind}` : ""}`;
+}
+
+function applyPrompts(data) {
+  state.prompts = data;
+  const saved = savedPrompt();
+  $("#prompt-text").value = saved.prompt;
+  $("#prompt-text").maxLength = data.maxChars;
+  $("#prompt-text").disabled = false;
+  $("#prompt-field").textContent = saved.field;
+  updatePromptBar();
+}
+
+function updatePromptBar() {
+  const saved = savedPrompt();
+  if (!saved) return;
+  const dirty = isPromptDirty();
+  const edited = saved.updatedAt
+    ? `Edited ${new Date(saved.updatedAt).toLocaleString("en-AU")}${saved.updatedBy ? ` by ${saved.updatedBy}` : ""}`
+    : "Edited";
+  $("#prompt-hint").textContent = dirty ? "Unsaved changes" : saved.isDefault ? "Using the default prompt" : edited;
+  $("#prompt-count").textContent = `${$("#prompt-text").value.length.toLocaleString("en-AU")} characters`;
+  $("#prompt-save").disabled = !dirty || !$("#prompt-text").value.trim();
+  $("#prompt-save").textContent = dirty ? "Save changes" : "Saved";
+  // Nothing to reset when the default is already showing.
+  $("#prompt-reset").disabled = saved.isDefault && !dirty;
+}
+
+async function loadPrompt() {
+  if (state.prompts) return;
+  setPromptStatus("Loading the prompt…");
+  try {
+    applyPrompts(await api("/api/pdf/prompts"));
+    setPromptStatus("");
+  } catch (error) {
+    setPromptStatus(error.message, "error");
+  }
+}
+
+async function sendPrompt(method, body, done) {
+  $("#prompt-save").disabled = $("#prompt-reset").disabled = true;
+  setPromptStatus("Saving…");
+  try {
+    applyPrompts(await api("/api/pdf/prompts", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+    setPromptStatus(done, "success");
+  } catch (error) {
+    setPromptStatus(error.message, "error");
+    updatePromptBar();
+  }
+}
+
+$("#prompt-text").addEventListener("input", updatePromptBar);
+$("#prompt-save").addEventListener("click", () =>
+  sendPrompt("PUT", { extract: PROMPT_EXTRACT, prompt: $("#prompt-text").value }, "Saved. Tech packs are read with this prompt from now on.")
+);
+$("#prompt-reset").addEventListener("click", () => {
+  if (savedPrompt().isDefault) {
+    // Only unsaved edits to undo.
+    $("#prompt-text").value = savedPrompt().prompt;
+    setPromptStatus("");
+    return updatePromptBar();
+  }
+  if (!confirm("Go back to the default tech pack prompt? Your edited prompt will be replaced.")) return;
+  sendPrompt("DELETE", { extract: PROMPT_EXTRACT }, "Reset to the default prompt.");
+});
+
 // Re-fetch the product currently shown so it reflects the new field selection.
 async function refreshOpenDetail() {
   if (!state.detail) return;
@@ -792,7 +885,39 @@ function renderMapping() {
     ]),
     ...rows
   );
+  renderBuiltIn(m.builtIn ?? []);
   updateMappingBar();
+}
+
+const BUILTIN_STATUS = {
+  ready: () => "Ready",
+  missing: (b) => `Create ${b.metafield} (${b.type}) in Shopify`,
+  "wrong-type": (b) => `${b.metafield} is ${b.foundType} in Shopify; it has to be ${b.type}`,
+  overridden: () => "Replaced by a mapping above",
+  unknown: () => "Can't check until Shopify is connected",
+};
+
+// The mappings Mouse applies by itself (builtin-mappings.mjs). They can't be edited here, only replaced by
+// mapping something else to the same Shopify field.
+function renderBuiltIn(builtIn) {
+  $("#mapping-builtin").replaceChildren(
+    ...(builtIn.length
+      ? [
+          el("h2", { class: "h5 settings-heading" }, "Built-in mappings"),
+          el("p", { class: "subdued" }, "Always sent to Shopify, overwriting what's there, so Product Pelican has the source data it writes from. Each needs a product metafield definition in Shopify with the namespace, key and type shown."),
+          el("table", { class: "sync-table builtin-table" }, [
+            el("thead", {}, el("tr", {}, ["Shopify metafield", "Sent from", "Status"].map((h) => el("th", { scope: "col" }, h)))),
+            el("tbody", {}, builtIn.map((b) =>
+              el("tr", {}, [
+                el("th", { scope: "row" }, [b.name, el("small", {}, `${b.metafield} · ${b.type}`)]),
+                el("td", {}, b.sources.join(" · ")),
+                el("td", { class: b.status === "ready" ? "" : "muted" }, BUILTIN_STATUS[b.status](b)),
+              ])
+            )),
+          ]),
+        ]
+      : [])
+  );
 }
 
 function renderMappingRow(row, index, saved) {
@@ -824,6 +949,9 @@ function renderMappingRow(row, index, saved) {
     row.target = target.value;
     const t = targetById(row.target);
     if (t && !t.modes.includes(row.mode)) row.mode = t.modes.includes("replace") ? "replace" : t.modes[0];
+    // The fields going into a JSON metafield are written together, so a new row follows the others.
+    const sibling = t?.kind === "json" && state.mappingRows.find((r) => r !== row && r.target === row.target);
+    if (sibling) row.mode = sibling.mode;
     renderMapping();
   });
 
@@ -834,8 +962,13 @@ function renderMappingRow(row, index, saved) {
       const input = el("input", { type: "radio", name: `mode-${row.id}`, value: mode });
       input.checked = row.mode === mode;
       input.disabled = !modes.includes(mode);
-      input.addEventListener("change", () => { row.mode = mode; updateMappingBar(); });
-      return el("label", { class: "segmented__option", title: input.disabled ? "Only text and list fields can be merged" : MODE_HELP[mode] }, [
+      input.addEventListener("change", () => {
+        row.mode = mode;
+        if (known?.kind !== "json") return updateMappingBar();
+        for (const r of state.mappingRows) if (r.target === row.target) r.mode = mode;
+        renderMapping();
+      });
+      return el("label", { class: "segmented__option", title: input.disabled ? "Only text, list and JSON fields can be merged" : MODE_HELP[mode] }, [
         input,
         el("span", {}, MODE_LABELS[mode]),
       ]);
@@ -900,13 +1033,46 @@ function shopifyPanel(record, { autoLoad = true, onState = () => {} } = {}) {
   let phase = "idle"; // idle | loading | ready | error
   let message = null; // { text, kind } shown under the preview
   let choosing = false; // the user asked to pick a different product
+  let reading = false; // a mapped PDF is being read; the preview is redone when that finishes
+  const unread = new Map(); // attachment id -> why its PDF couldn't be read, so it isn't retried on every preview
 
   const snapshot = () => {
     if (phase !== "ready") return { phase };
     if (!data.connected) return { phase, status: "disconnected" };
     if (data.match.product && data.mappingCount === 0) return { phase, status: "unmapped" };
     const changes = data.preview?.changeCount ?? 0;
-    return { phase, status: data.match.status, changes, canUpdate: Boolean(data.match.product) && changes > 0 };
+    return {
+      phase,
+      status: data.match.status,
+      changes,
+      canUpdate: Boolean(data.match.product) && changes > 0 && !reading,
+      dryRunOnly: data.dryRunOnly,
+      reading,
+      unread: (data.extracts ?? []).some((e) => unread.has(e.attachmentId)),
+    };
+  };
+
+  // Mapped PDFs (the tech pack) are read the first time their product is previewed, then the preview is
+  // redone with their text. Only once there's a product to update, since reading one takes a minute or two.
+  const readExtracts = async () => {
+    const needed = () =>
+      phase === "ready" && data.preview ? (data.extracts ?? []).filter((e) => e.status === "needed" && !unread.has(e.attachmentId)) : [];
+    if (needed().length === 0) return;
+    reading = true;
+    render();
+    onState(snapshot());
+    for (const e of needed()) {
+      const result = await runExtract({ recordId: record.id, fieldId: e.fieldId, attachmentId: e.attachmentId, extract: e.extract });
+      if (result.error) unread.set(e.attachmentId, result.error);
+    }
+    try {
+      data = { ...(await fetchPreview()), result: data.result };
+      // Still not there after a read that reported no error: don't go round again.
+      for (const e of needed()) unread.set(e.attachmentId, "The text read from the PDF wasn't saved");
+    } catch (error) {
+      message = { text: error.message, kind: "error" };
+    }
+    reading = false;
   };
 
   // Runs a request, showing `label` meanwhile. On failure `recover` (if given) reloads the preview so the error has context.
@@ -927,6 +1093,7 @@ function shopifyPanel(record, { autoLoad = true, onState = () => {} } = {}) {
         } catch {}
       }
     }
+    await readExtracts();
     render();
     onState(snapshot());
   };
@@ -938,6 +1105,7 @@ function shopifyPanel(record, { autoLoad = true, onState = () => {} } = {}) {
   const load = () => {
     message = null;
     choosing = false;
+    unread.clear();
     return run("Checking Shopify…", () => fetchPreview());
   };
   const choose = () => {
@@ -950,17 +1118,26 @@ function shopifyPanel(record, { autoLoad = true, onState = () => {} } = {}) {
     choosing = false;
     return run("Saving…", () => send("PUT", { productId }), () => fetchPreview());
   };
-  const update = () => {
+  // A dry run goes through the whole update without sending anything to Shopify, and shows what would be sent.
+  const update = ({ dryRun = false } = {}) => {
     if (!snapshot().canUpdate) return Promise.resolve();
-    const payload = { productId: data.match.product.id, fingerprint: data.preview.fingerprint };
+    const payload = { productId: data.match.product.id, fingerprint: data.preview.fingerprint, dryRun };
     return run(
-      "Updating Shopify…",
+      dryRun ? "Running dry run…" : "Updating Shopify…",
       async () => {
         const res = await send("POST", payload);
-        const { saved, failed } = res.result;
-        message = failed
-          ? { text: `${saved} value${saved === 1 ? "" : "s"} saved, ${failed} failed. See the rows marked Failed.`, kind: "error" }
-          : { text: `Updated ${saved} value${saved === 1 ? "" : "s"} in Shopify.`, kind: "success" };
+        const { saved, failed, requests } = res.result;
+        const count = `${saved} value${saved === 1 ? "" : "s"}`;
+        if (res.result.dryRun) {
+          message = {
+            text: `Dry run complete: ${count} would be saved in ${requests.length} Shopify request${requests.length === 1 ? "" : "s"}. Nothing was written.`,
+            kind: "success",
+          };
+        } else if (failed) {
+          message = { text: `${count} saved, ${failed} failed. See the rows marked Failed.`, kind: "error" };
+        } else {
+          message = { text: `Updated ${count} in Shopify.`, kind: "success" };
+        }
         return res;
       },
       () => fetchPreview()
@@ -972,6 +1149,14 @@ function shopifyPanel(record, { autoLoad = true, onState = () => {} } = {}) {
   const values = (list) => {
     if (list.length === 0 || (list.length === 1 && list[0] == null)) return el("span", { class: "muted" }, "Empty");
     return list.map((v) => v ?? "Empty").join(" · ");
+  };
+
+  // Where a row's value comes from. A JSON metafield can combine dozens of fields, so those are counted, not listed.
+  const sourceSummary = (row) => {
+    if (!row.combined) return `${row.sources.join(" + ")} · ${row.modes.map((m) => MODE_LABELS[m]).join(" + ")}`;
+    const { included, of } = row.combined;
+    const left = of - included;
+    return `${included} Airtable field${included === 1 ? "" : "s"} combined${left ? `, ${left} empty left out` : ""} · ${MODE_LABELS[row.modes[0]]}`;
   };
 
   const previewTable = (preview, errors) =>
@@ -986,7 +1171,7 @@ function shopifyPanel(record, { autoLoad = true, onState = () => {} } = {}) {
             : el("span", { class: "pill pill--no" }, row.action === "skip" ? "Skipped" : "No change");
         const partial = row.action === "set" && row.owner === "variant" && `${row.changing} of ${row.of} variants`;
         return el("tr", {}, [
-          el("th", { scope: "row" }, [row.label, el("small", {}, `${row.sources.join(" + ")} · ${row.modes.map((m) => MODE_LABELS[m]).join(" + ")}`)]),
+          el("th", { scope: "row" }, [row.label, el("small", { title: row.combined ? row.sources.join(", ") : null }, sourceSummary(row))]),
           el("td", {}, [values(row.current)]),
           el("td", {}, [
             row.action === "set" ? values(row.next) : el("span", { class: "muted" }, "—"),
@@ -1053,15 +1238,41 @@ function shopifyPanel(record, { autoLoad = true, onState = () => {} } = {}) {
         parts.push(el("p", { class: "status" }, ["No field mappings are saved yet. Set them up in ", el("a", { href: "#/mapping" }, "Mapping"), "."]));
       } else if (preview) {
         const go = el("button", { class: "button button--small", type: "button" }, "Update Shopify");
-        go.disabled = preview.changeCount === 0;
-        go.addEventListener("click", update);
-        const summary = preview.changeCount
-          ? `${preview.changeCount} field${preview.changeCount === 1 ? "" : "s"} will change. Nothing is written until you update.`
-          : "Nothing to update: Shopify already has these values.";
-        parts.push(previewTable(preview, data.result?.errors ?? {}), el("div", { class: "sync__actions" }, [go, el("span", { class: "muted" }, summary)]));
+        const dry = el("button", { class: "button button--ghost button--small", type: "button" }, "Dry run");
+        go.disabled = dry.disabled = preview.changeCount === 0 || reading;
+        go.addEventListener("click", () => update());
+        dry.addEventListener("click", () => update({ dryRun: true }));
+        const fields = `${preview.changeCount} field${preview.changeCount === 1 ? "" : "s"} will change.`;
+        const summary = reading
+          ? "Waiting for the PDF to be read."
+          : !preview.changeCount
+            ? "Nothing to update: Shopify already has these values."
+            : data.dryRunOnly
+              ? `${fields} This site is in dry run mode, so nothing is written to Shopify.`
+              : `${fields} Nothing is written until you update.`;
+        const extracts = data.extracts ?? [];
+        if (reading) {
+          const names = extracts.filter((e) => e.status === "needed").map((e) => `${e.label.toLowerCase()} (${e.filename})`);
+          parts.push(el("p", { class: "status" }, `Reading the ${names.join(" and ")}. This takes a minute or two; the preview updates when it's done.`));
+        }
+        for (const e of extracts.filter((x) => unread.has(x.attachmentId))) {
+          parts.push(el("p", { class: "status status--error" }, [`The ${e.label.toLowerCase()} (${e.filename}) couldn't be read, so it's left out: ${unread.get(e.attachmentId)} `, retry]));
+        }
+        parts.push(
+          previewTable(preview, data.result?.errors ?? {}),
+          el("div", { class: "sync__actions" }, [!data.dryRunOnly && go, dry, el("span", { class: "muted" }, summary)])
+        );
       }
     }
-    body.replaceChildren(...parts, note || "");
+    // After a dry run, the exact requests that an update would send.
+    const requests = data.result?.dryRun && data.result.requests;
+    const sent = requests
+      ? el("details", { class: "sync__requests" }, [
+          el("summary", {}, `Show the ${requests.length} request${requests.length === 1 ? "" : "s"} an update would send`),
+          ...requests.map((r) => el("pre", {}, `${r.name}\n${JSON.stringify(r.variables, null, 2)}`)),
+        ])
+      : "";
+    body.replaceChildren(...parts, note || "", sent);
   }
 
   render();
@@ -1074,12 +1285,15 @@ function syncPill(s) {
   if (s.phase === "idle") return "";
   if (s.phase === "loading") return el("span", { class: "pill pill--no" }, "Checking…");
   if (s.phase === "error") return el("span", { class: "pill pill--error" }, "Shopify error");
+  if (s.reading) return el("span", { class: "pill pill--no" }, "Reading PDF…");
   const [text, kind] = {
     disconnected: ["Not connected", "no"],
     none: ["No Shopify match", "no"],
     choose: ["Choose product", "change"],
     unmapped: ["No mappings", "no"],
   }[s.status] ?? (s.changes ? [`${s.changes} change${s.changes === 1 ? "" : "s"}`, "change"] : ["Up to date", "yes"]);
+  // A PDF that couldn't be read is left out of the update, which the row's change count wouldn't show.
+  if (s.unread) return el("span", { class: "pill pill--error" }, `${text} · PDF not read`);
   return el("span", { class: `pill pill--${kind}` }, text);
 }
 
@@ -1109,9 +1323,56 @@ function renderValue(f, recordId) {
 }
 
 // ---------- PDF extraction ----------
+const extractKey = (recordId, attachmentId, extract) => `${recordId}:${attachmentId}:${extract}`;
+const extractRuns = new Map(); // key -> promise, so two requests for the same PDF share one run
+
+// Has Gemini read a PDF attachment. Resolves with what ends up in state.extracts: the result, or an error.
+function runExtract({ recordId, fieldId, attachmentId, extract }) {
+  const key = extractKey(recordId, attachmentId, extract);
+  // Any "Extract" button on the page for this PDF shows the same progress.
+  const repaint = () => document.querySelectorAll(".pdf-extract").forEach((node) => node.dataset.extractKey === key && node.repaint());
+  if (!extractRuns.has(key)) {
+    state.extracts.set(key, { status: "loading" });
+    repaint();
+    const work = async () => {
+      try {
+        const res = await api("/api/pdf/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ recordId, fieldId, attachmentId, extract }),
+        });
+        await api("/api/pdf/extract/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: res.jobId }),
+        });
+        let delay = 1000;
+        const deadline = Date.now() + 16 * 60 * 1000;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          const job = await api(`/api/pdf/extract?jobId=${encodeURIComponent(res.jobId)}`);
+          if (job.status === "done") return { status: "done", ...job.result };
+          if (job.status === "error") throw new Error(job.error || "PDF extraction failed");
+          delay = Math.min(Math.ceil(delay * 1.5), 5000);
+        }
+        throw new Error("PDF extraction took too long. Try again.");
+      } catch (error) {
+        return { status: "done", error: error.message };
+      }
+    };
+    extractRuns.set(key, work().then((result) => {
+      state.extracts.set(key, result);
+      extractRuns.delete(key);
+      repaint();
+      return result;
+    }));
+  }
+  return extractRuns.get(key);
+}
+
 // A PDF thumbnail with an "Extract" action beside it; the result shows underneath as Markdown.
 function renderPdfTool(f, attachment, link, recordId, extract = "tech-pack", label = "Tech pack") {
-  const key = `${recordId}:${attachment.id}:${extract}`;
+  const key = extractKey(recordId, attachment.id, extract);
   const button = el("button", { class: "button button--ghost button--small", type: "button" });
   const output = el("div", { class: "pdf-extract__output" });
 
@@ -1137,43 +1398,12 @@ function renderPdfTool(f, attachment, link, recordId, extract = "tech-pack", lab
     }
   };
 
-  button.addEventListener("click", async () => {
-    state.extracts.set(key, { status: "loading" });
-    paint();
-    try {
-      const res = await api("/api/pdf/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordId, fieldId: f.id, attachmentId: attachment.id, extract }),
-      });
-      await api("/api/pdf/extract/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: res.jobId }),
-      });
-      let delay = 1000;
-      let completed = false;
-      const deadline = Date.now() + 16 * 60 * 1000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        const job = await api(`/api/pdf/extract?jobId=${encodeURIComponent(res.jobId)}`);
-        if (job.status === "done") {
-          state.extracts.set(key, { status: "done", ...job.result });
-          completed = true;
-          break;
-        }
-        if (job.status === "error") throw new Error(job.error || "PDF extraction failed");
-        delay = Math.min(Math.ceil(delay * 1.5), 5000);
-      }
-      if (!completed) throw new Error("PDF extraction took too long. Try again.");
-    } catch (error) {
-      state.extracts.set(key, { status: "done", error: error.message });
-    }
-    paint();
-  });
+  button.addEventListener("click", () => runExtract({ recordId, fieldId: f.id, attachmentId: attachment.id, extract }));
 
   paint();
-  return el("div", { class: "pdf-extract" }, [el("div", { class: "pdf-extract__row" }, [link, button]), output]);
+  const node = el("div", { class: "pdf-extract", "data-extract-key": key }, [el("div", { class: "pdf-extract__row" }, [link, button]), output]);
+  node.repaint = paint;
+  return node;
 }
 
 function renderScalar(v, f) {

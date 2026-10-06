@@ -4,6 +4,8 @@ import { groupFields } from "../lib/settings.mjs";
 import { getMetafieldDefinitions, ShopifyNotConfigured } from "../lib/shopify.mjs";
 import { NATIVE_FIELDS, metafieldKind } from "../lib/shopify-fields.mjs";
 import { loadMappings, modesFor, resolveTarget, saveMappings, validateMappings } from "../lib/mapping.mjs";
+import { describeBuiltins } from "../lib/builtin-mappings.mjs";
+import { extractSources } from "../lib/pdf-extract.mjs";
 
 // Airtable field → Shopify field mappings. GET returns the mappings plus everything the editor needs
 // (Airtable fields, native Shopify fields, metafield definitions); PUT replaces the whole list.
@@ -28,7 +30,8 @@ export default async (req) => {
     }
 
     const saved = await loadMappings();
-    const fieldIds = new Set(table.fields.map((f) => f.id));
+    const extracts = extractSources(table);
+    const fieldIds = new Set([...table.fields.map((f) => f.id), ...extracts.map((s) => s.id)]);
 
     return json({
       table: table.name,
@@ -41,11 +44,19 @@ export default async (req) => {
         sourceMissing: !fieldIds.has(m.sourceFieldId),
         targetMissing: Boolean(shopify.definitions) && !resolveTarget(m.target, shopify.definitions),
       })),
-      sources: groupFields(table).map((g) => ({
-        name: g.name,
-        fields: g.fields.map((f) => ({ id: f.id, name: f.name.trim(), type: f.type })),
-      })),
+      sources: [
+        ...groupFields(table).map((g) => ({
+          name: g.name,
+          fields: g.fields.map((f) => ({ id: f.id, name: f.name.trim(), type: f.type })),
+        })),
+        // Text that Gemini reads out of a PDF attachment, mapped like any other field.
+        ...(extracts.length
+          ? [{ name: "Read from PDFs", fields: extracts.map((s) => ({ id: s.id, name: `${s.name} (from PDF)`, type: "extract" })) }]
+          : []),
+      ],
       targets: buildTargets(shopify.definitions),
+      // Applied on every sync without being set up here; listed so it's clear what else gets written.
+      builtIn: describeBuiltins(saved.mappings, shopify.definitions),
     });
   } catch (err) {
     console.error("[mappings] error", err);

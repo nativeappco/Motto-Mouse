@@ -55,8 +55,10 @@ export function metafieldKind(type) {
       return "money";
     case "boolean":
       return "boolean";
+    case "json":
+      return "json";
     default:
-      // date, date_time, json, dimension/weight/volume, references, rating, etc.
+      // date, date_time, dimension/weight/volume, references, rating, etc.
       return "other";
   }
 }

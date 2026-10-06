@@ -1,8 +1,9 @@
 import { getStore } from "@netlify/blobs";
+import { extractSources } from "./pdf-extract.mjs";
 import { metafieldKind, nativeField } from "./shopify-fields.mjs";
 
 // ---------- Update modes ----------
-// merge   – append to what's already in Shopify (tags, list metafields, text)
+// merge   – append to what's already in Shopify (tags, list metafields, text); for JSON, add or update keys
 // replace – overwrite whatever is in Shopify
 // new     – only fill the field if it's currently empty in Shopify
 export const MODES = ["merge", "replace", "new"];
@@ -11,7 +12,7 @@ export const MODES = ["merge", "replace", "new"];
 const MERGEABLE = new Set(["list", "text", "multiline", "html"]);
 
 export function modesFor(kind) {
-  return MERGEABLE.has(kind) ? MODES : ["replace", "new"];
+  return MERGEABLE.has(kind) || kind === "json" ? MODES : ["replace", "new"];
 }
 
 // ---------- Targets ----------
@@ -65,7 +66,7 @@ export async function saveMappings(mappings, username) {
 export function validateMappings(input, table, definitions) {
   if (!Array.isArray(input)) return { error: "mappings must be a list" };
   if (input.length > 200) return { error: "Too many mappings" };
-  const sourceIds = new Set(table.fields.map((f) => f.id));
+  const sourceIds = new Set([...table.fields.map((f) => f.id), ...extractSources(table).map((s) => s.id)]);
   const out = [];
   const byTarget = new Map();
 
@@ -86,12 +87,22 @@ export function validateMappings(input, table, definitions) {
     const id = typeof m.id === "string" && /^[\w-]{1,40}$/.test(m.id) ? m.id : crypto.randomUUID();
     out.push({ id, sourceFieldId: m.sourceFieldId, target: m.target, mode: m.mode });
     if (!byTarget.has(m.target)) byTarget.set(m.target, []);
-    byTarget.get(m.target).push({ row: i + 1, mode: m.mode, label: target.label });
+    byTarget.get(m.target).push({ row: i + 1, mode: m.mode, label: target.label, kind: target.kind });
   }
 
-  // Several Airtable fields can feed one Shopify field only if they all append to it.
   for (const rows of byTarget.values()) {
-    if (rows.length > 1 && rows.some((r) => r.mode !== "merge")) {
+    if (rows.length < 2) continue;
+    // A JSON metafield takes any number of Airtable fields as one object, written in a single mode.
+    if (rows[0].kind === "json") {
+      if (rows.some((r) => r.mode !== rows[0].mode)) {
+        return {
+          error: `Rows ${rows.map((r) => r.row).join(", ")} are combined into ${rows[0].label}, so they need the same “Existing data” setting.`,
+        };
+      }
+      continue;
+    }
+    // Several Airtable fields can feed any other Shopify field only if they all append to it.
+    if (rows.some((r) => r.mode !== "merge")) {
       return {
         error: `Rows ${rows.map((r) => r.row).join(", ")} all write to ${rows[0].label}. Set them all to Merge, or remove the extras.`,
       };
@@ -135,10 +146,37 @@ export function coerce(value, kind, choices = null) {
   }
 }
 
+// An Airtable cell value as it goes into a JSON metafield, keeping numbers, booleans and lists as they are.
+// Returns undefined when there's nothing to write.
+export function jsonValue(value) {
+  if (value == null) return undefined;
+  if (Array.isArray(value)) {
+    const items = value.map(jsonValue).filter((v) => v !== undefined);
+    // Lookups arrive as lists even when they hold one value.
+    return items.length === 0 ? undefined : items.length === 1 ? items[0] : items;
+  }
+  if (typeof value === "object") {
+    // Selects, collaborators and linked records have a name; attachments a filename (their URLs expire).
+    return jsonValue(value.name ?? value.filename ?? value.email ?? null);
+  }
+  if (typeof value === "string") return value.trim() || undefined;
+  return value;
+}
+
 // Decide what to write, given the current Shopify value, the incoming (coerced) value and the mode.
 // Returns { action: "set" | "unchanged" | "skip", value?, reason? }.
 export function applyMode(mode, kind, existing, incoming) {
   if (isBlank(incoming)) return { action: "skip", reason: "Airtable field is empty" };
+
+  if (kind === "json") {
+    if (mode === "new" && !isBlank(existing)) return { action: "skip", reason: "Shopify already has a value" };
+    let value = incoming;
+    if (mode === "merge" && !isBlank(existing)) {
+      if (!isObject(existing)) return { action: "skip", reason: "Shopify holds JSON that isn't an object, so there's nothing to merge into. Use Replace" };
+      value = { ...existing, ...incoming };
+    }
+    return canonical(existing) === canonical(value) ? { action: "unchanged" } : { action: "set", value };
+  }
 
   if (mode === "new") {
     if (!isBlank(existing)) return { action: "skip", reason: "Shopify already has a value" };
@@ -187,11 +225,21 @@ function dedupe(items) {
   });
 }
 
+function isObject(v) {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
 function isBlank(v) {
   if (v == null) return true;
   if (typeof v === "string") return v.trim() === "";
   if (Array.isArray(v)) return v.length === 0;
+  if (isObject(v)) return Object.keys(v).length === 0;
   return false;
+}
+
+// JSON with object keys in a fixed order, so two values can be compared whatever order their keys came in.
+function canonical(v) {
+  return JSON.stringify(v, (_, x) => (isObject(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 }
 
 function same(a, b) {

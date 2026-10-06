@@ -1,17 +1,22 @@
 import { getStore } from "@netlify/blobs";
 
-// Recommended fields from Motto's "Airtable Online Description Data" brief, in their order.
+// Recommended fields from Motto's "Airtable Online Description Data" brief and metafield rules, in their order.
 export const RECOMMENDED_GROUPS = [
   {
     name: "Core identifiers",
     fields: [
       "BOX#",
+      "SKU",
       "PO#",
+      "REX Description",
       "Description",
       "PATTERN#",
+      "Supplier",
+      "Super-Category",
       "Category",
       "Sub-Category",
       "Range Tag",
+      "REX Col Name",
       "COLOURWAY",
       "IMAGE (from PO#) (from COLOURWAY TAG LINK)",
       "PDF BULK TECH PACK",
@@ -25,10 +30,12 @@ export const RECOMMENDED_GROUPS = [
       "Fiber Comp %",
       "Stretch Rating",
       "Fabric Weight",
-      "Handfeel",
-      "Sizing Advice",
-      "Sizing / Description Notes",
+      "Handfeel & Finish",
       "Size Set",
+      "ACTIVE SIZES",
+      "Sizing Advice",
+      "Fit Type",
+      "Sizing / Description Notes",
       "OLD ONLINE DESC",
     ],
   },

@@ -75,6 +75,23 @@
     <!-- Settings -->
     <section class="page" id="settings-view" hidden>
       <h1 class="h2">Settings</h1>
+
+      <details class="prompt-editor" id="prompt-editor">
+        <summary><span class="h5">Tech pack PDF prompt</span><span class="prompt-editor__hint" id="prompt-hint"></span></summary>
+        <p class="subdued">The instructions Gemini follows when it reads the PDF in <span id="prompt-field">PDF BULK TECH PACK</span>. The text it returns is what the lookup shows, and what a &ldquo;Tech pack text&rdquo; mapping sends to Shopify. After a change, each tech pack is read again the next time its product is previewed for Shopify.</p>
+        <label class="visually-hidden" for="prompt-text">Tech pack PDF prompt</label>
+        <textarea id="prompt-text" rows="18" spellcheck="false" disabled></textarea>
+        <div class="settings-bar">
+          <span class="settings-bar__count" id="prompt-count"></span>
+          <div class="settings-bar__actions">
+            <button class="button button--ghost" type="button" id="prompt-reset" disabled>Reset to default</button>
+            <button class="button" type="button" id="prompt-save" disabled>Saved</button>
+          </div>
+        </div>
+        <p class="status" id="prompt-status" role="status" aria-live="polite"></p>
+      </details>
+
+      <h2 class="h5 settings-heading">Lookup fields</h2>
       <p class="subdued">Choose which Airtable fields the product lookup shows. Fields are loaded live from the <span id="settings-table">BOX #S</span> table.</p>
 
       <div class="settings-bar">
@@ -96,10 +113,11 @@
       <p class="subdued">Choose which Shopify product, variant or metafield each Airtable field from the <span id="mapping-table">BOX #S</span> table is written to, and how existing Shopify data is treated.</p>
 
       <dl class="modes-legend">
-        <div><dt>Merge</dt><dd>Add to what's in Shopify, e.g. extra tags. Text is appended. Nothing is added twice.</dd></div>
+        <div><dt>Merge</dt><dd>Add to what's in Shopify, e.g. extra tags. Text is appended. Nothing is added twice. In a JSON metafield, keys are added or updated and the rest are kept.</dd></div>
         <div><dt>Replace</dt><dd>Overwrite the Shopify value.</dd></div>
         <div><dt>New</dt><dd>Only fill the field if it's empty in Shopify.</dd></div>
       </dl>
+      <p class="subdued">A JSON metafield can take any number of Airtable fields: map each one to it and they are saved together as a single object, keyed by Airtable field name. Empty fields are left out.</p>
       <p class="notice" id="mapping-notice" hidden></p>
 
       <div class="settings-bar">
@@ -112,6 +130,7 @@
       </div>
       <p class="status" id="mapping-status" role="status" aria-live="polite"></p>
       <div id="mapping-rows"></div>
+      <div id="mapping-builtin"></div>
     </section>
   </main>
 

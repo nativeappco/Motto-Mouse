@@ -43,6 +43,8 @@ body {
   margin: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
+  /* minmax(0, …) keeps wide content (a table, preformatted text) from stretching the page; it scrolls in place. */
+  grid-template-columns: minmax(0, 1fr);
   min-height: 100vh;
   background: var(--color-white);
   color: var(--color-black);
@@ -158,6 +160,12 @@ input {
   color: inherit;
 }
 input:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
+textarea {
+  display: block; width: 100%; padding: 0.75rem 0.9rem; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--font-size--xs); line-height: 1.5;
+  border: 1px solid var(--color-black); border-radius: 0; background: var(--color-white); color: inherit;
+}
+textarea:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
 
 .button {
   font: inherit;
@@ -272,7 +280,8 @@ input:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
 .fields th, .fields td { text-align: left; vertical-align: top; padding: 0.6rem 0.75rem 0.6rem 0; border-bottom: 1px solid var(--color-border); }
 .fields th { width: 32%; font-weight: 400; }
 .fields th small { display: block; color: var(--color-muted); font-size: var(--font-size--2xs); text-transform: uppercase; letter-spacing: var(--letter-spacing-sm); margin-top: 0.15rem; }
-.fields td { word-break: break-word; }
+/* max-width stops wide content (the Markdown read from a PDF) stretching the table past the page; it scrolls instead. */
+.fields td { word-break: break-word; max-width: 0; }
 .fields tr.is-empty td { color: var(--color-outofstock); }
 .value-error { color: var(--color-error); }
 .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
@@ -282,7 +291,7 @@ input:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
 .attachment img { width: 96px; height: 96px; object-fit: cover; background: var(--color-surface); }
 
 .button--small { padding: 0.5rem 0.9rem; font-size: var(--font-size--2xs); }
-.pdf-extract { flex-basis: 100%; }
+.pdf-extract { flex-basis: 100%; min-width: 0; }
 .pdf-extract__row { display: flex; align-items: center; gap: var(--gap-lg); }
 .pdf-extract__output:empty { display: none; }
 .pdf-extract__output .status { margin: var(--gap-sm) 0 0; }
@@ -310,6 +319,21 @@ a { color: inherit; text-underline-offset: 3px; }
 .settings-bar__count { color: var(--color-muted); font-size: var(--font-size--xs); }
 .settings-bar__actions { display: flex; flex-wrap: wrap; gap: var(--gap-sm); margin-left: auto; }
 .settings-bar__actions .button { padding: 0.7rem 1.1rem; }
+
+.settings-heading { margin: var(--gap-2xl) 0 var(--gap-xs); }
+.settings-heading + .subdued { margin-bottom: var(--gap-lg); }
+.prompt-editor { border-top: 1px solid var(--color-black); border-bottom: 1px solid var(--color-border); }
+.prompt-editor summary {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-xs) var(--gap-lg);
+  padding: var(--gap-lg) 0; cursor: pointer; list-style: none;
+}
+.prompt-editor summary::-webkit-details-marker { display: none; }
+.prompt-editor summary::after { content: "Edit"; margin-left: auto; font-size: var(--font-size--xs); text-decoration: underline; text-underline-offset: 3px; }
+.prompt-editor[open] summary::after { content: "Close"; }
+.prompt-editor__hint { color: var(--color-muted); font-size: var(--font-size--xs); }
+.prompt-editor .subdued { margin-bottom: var(--gap-lg); }
+.prompt-editor .settings-bar { margin-top: var(--gap-sm); }
+.prompt-editor .status { margin: var(--gap-sm) 0 var(--gap-lg); }
 
 .settings-group { margin-top: var(--gap-2xl); }
 .settings-group__head {
@@ -342,6 +366,7 @@ a { color: inherit; text-underline-offset: 3px; }
 }
 .modes-legend dt { font-size: var(--font-size--xs); text-transform: uppercase; letter-spacing: var(--letter-spacing-md); font-weight: 700; }
 .modes-legend dd { margin: 0.2rem 0 0; color: var(--color-muted); }
+.modes-legend + .subdued { margin-bottom: var(--gap-lg); }
 .notice { margin: 0 0 var(--gap-lg); padding: var(--gap-sm) var(--gap-lg); border-left: 3px solid var(--color-accent); background: var(--color-surface); }
 
 .mapping-head, .mapping-row {
@@ -387,6 +412,9 @@ select:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
   text-align: left; vertical-align: top; font-weight: 400; word-break: break-word;
   padding: 0.5rem 0.75rem 0.5rem 0; border-bottom: 1px solid var(--color-border);
 }
+/* A long new value (JSON, tech pack text) would otherwise squeeze the first two columns to a few letters. */
+.sync-table tr > :nth-child(1) { width: 22%; }
+.sync-table tr > :nth-child(2) { width: 26%; }
 .sync-table thead th {
   font-size: var(--font-size--2xs); text-transform: uppercase; letter-spacing: var(--letter-spacing-md);
   border-bottom-color: var(--color-black);
@@ -394,6 +422,15 @@ select:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
 .sync-table small { display: block; margin-top: 0.15rem; color: var(--color-muted); font-size: var(--font-size--2xs); }
 .sync-table small.value-error { color: var(--color-error); }
 .sync-table td:last-child { width: 1%; padding-right: 0; white-space: nowrap; }
+.builtin-table { margin-top: 0; }
+.builtin-table tr > :nth-child(2) { width: auto; }
+.builtin-table td:last-child { width: 30%; white-space: normal; }
+.sync__requests { margin-top: var(--gap-sm); font-size: var(--font-size--xs); }
+.sync__requests summary { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.sync__requests pre {
+  margin: var(--gap-xs) 0 0; padding: var(--gap-sm); max-height: 20rem; overflow: auto;
+  background: var(--color-white); white-space: pre-wrap; word-break: break-word;
+}
 .muted { color: var(--color-muted); }
 .pill--change { color: var(--color-accent); }
 .pill--error { color: var(--color-error); }
@@ -418,7 +455,8 @@ select:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
   .search { flex-direction: column; }
   .detail-head { grid-template-columns: 1fr; }
   .detail-head__image { width: 140px; }
-  .fields th, .fields td { display: block; width: 100%; padding-right: 0; }
+  .fields, .fields tbody, .fields tr { display: block; }
+  .fields th, .fields td { display: block; width: 100%; max-width: none; padding-right: 0; }
   .fields th { border-bottom: 0; padding-bottom: 0; }
   .batch-item__summary { grid-template-columns: 40px 1fr 1rem; gap: var(--gap-sm); }
   .batch-item__summary .result__thumb { width: 40px; height: 40px; }
