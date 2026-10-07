@@ -1,4 +1,4 @@
-import { getSession } from "../lib/auth.mjs";
+import { NO_INDEX, getSession } from "../lib/auth.mjs";
 import { exchangeCode, readState, stateCookie, validCallback } from "../lib/shopify-auth.mjs";
 
 // Shopify sends the user back here after they approve the app. Swaps the one-time code for an Admin API token.
@@ -43,6 +43,7 @@ function page(req, status, title, message) {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
+      "X-Robots-Tag": NO_INDEX,
       "Set-Cookie": stateCookie(req, ""),
     },
   });

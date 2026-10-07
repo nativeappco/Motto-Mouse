@@ -8,5 +8,7 @@
   for = "/*"
   [headers.values]
     X-Frame-Options = "DENY"
+    # Keeps every file out of search results and AI indexes, including the images and video a <meta> tag can't cover.
+    X-Robots-Tag = "noindex, nofollow, noarchive, nosnippet, noimageindex"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "same-origin"

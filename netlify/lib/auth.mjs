@@ -62,9 +62,12 @@ export function getSession(req) {
   }
 }
 
+// The headers in netlify.toml only reach static files, so responses from functions say "noindex" themselves.
+export const NO_INDEX = "noindex, nofollow, noarchive, nosnippet";
+
 export function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Robots-Tag": NO_INDEX, ...headers },
   });
 }

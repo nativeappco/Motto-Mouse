@@ -1,0 +1,3 @@
+# Motto Mouse is a private internal tool. Nothing here is for crawling or indexing.
+User-agent: *
+Disallow: /
