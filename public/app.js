@@ -374,7 +374,7 @@ function batchItem(query, onSync = () => {}) {
       image: s.image?.thumbnails?.small?.url ?? s.image?.url,
       title: `${s.box ?? "—"} · ${s.description ?? "Untitled"}`,
       meta: [differs && `Searched ${searched}`, s.colourway, s.po && `PO ${s.po}`, s.pattern && `Pattern ${s.pattern}`].filter(Boolean).join(" · "),
-      badge: el("span", { class: "batch-item__badges" }, [syncBadge, releasedPill(s.released)]),
+      badge: el("span", { class: "batch-item__badges" }, [syncBadge, techPackPill(s.techPack), skuPill(s.sku)]),
     });
     sync = shopifyPanel(record, {
       autoLoad: false,
@@ -471,6 +471,15 @@ function releasedPill(released) {
   return el("span", { class: `pill ${released ? "pill--yes" : "pill--no"}` }, released ? "Released" : "Not released");
 }
 
+// Batch rows flag what's missing, so gaps show without expanding every row.
+function techPackPill(techPack) {
+  return el("span", { class: `pill ${techPack ? "pill--yes" : "pill--error"}`, title: techPack?.filename }, techPack ? "Tech pack" : "No tech pack");
+}
+
+function skuPill(sku) {
+  return el("span", { class: sku ? "pill" : "pill pill--error" }, sku ? `SKU ${sku}` : "No SKU");
+}
+
 // The headline values shown at the top of a product, pulled from its field list.
 function recordSummary(record) {
   const field = (name) => record.fields.find((f) => f.name === name)?.value;
@@ -483,6 +492,9 @@ function recordSummary(record) {
     po: field("BACK-UP PO#") ?? null,
     pattern: trim(firstText(field("PATTERN#"))) || null,
     released: Boolean(field("Released")),
+    sku: [].concat(field("SKU") ?? []).map((x) => String(x?.name ?? x).trim()).find(Boolean) ?? null,
+    // The first PDF is the one that's read for Shopify (see firstPdf in pdf-extract.mjs).
+    techPack: [].concat(field("PDF BULK TECH PACK") ?? []).find((a) => a?.id && a.type === "application/pdf") ?? null,
   };
 }
 

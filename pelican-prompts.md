@@ -53,10 +53,10 @@ Example:
 
 ## Fabric & Feel
 
-Target: `custom.fabric_and_feel` (multi-line text). 1,445 characters.
+Target: `custom.fabric_and_feel` (multi-line text). 1,553 characters.
 
 ```
-Write one short paragraph about the fabric from "Source: Fabric", then a care line on a new line.
+Write one short paragraph about the fabric from "Source: Fabric", then a care line on a new line. Keep the tone clear, factual and natural, with a little warmth and no sales language or exaggerated claims.
 Paragraph: give Fiber Comp % exactly as written, then how the fabric feels and presents, from Handfeel & Finish, in natural customer language. You may blend or soften its descriptors ("Silky, Smooth, Fluid, Subtle Sheen" = "a silky, smooth feel with a fluid drape and subtle sheen") but not add a quality they do not support. Work in Fabric Weight as very lightweight, lightweight, mid-weight, heavyweight or extra heavyweight (for Very Heavy); light does not mean thin or sheer, and heavy does not mean stiff. Leave stretch to the Stretch field unless a brief mention helps describe the fabric. Fabric Tag is background only and never appears in the copy. Skip any part whose data is missing.
 Care line, from "Tech pack: Care label", in one of these forms:
 How to love me: Machine washable
@@ -69,10 +69,10 @@ How to love me: Hand wash only to preserve the fabric finish
 
 ## Stretch
 
-Target: `custom.stretch` (multi-line text). 1,209 characters.
+Target: `custom.stretch` (multi-line text). 1,317 characters.
 
 ```
-Write up to three sentences as one paragraph.
+Write up to three sentences as one paragraph. Keep the tone clear, factual and natural, with a little warmth and no sales language or exaggerated claims.
 Sentence 1 is fixed by Stretch Rating in "Source: Fabric". Copy the matching sentence exactly:
 0 – No Stretch: This style is made from a fabric with no stretch.
 1 – Some Stretch: This style is made from a fabric with a little stretch.
@@ -85,32 +85,55 @@ Example:
 This style is made from a fabric with no stretch. Its soft, fluid feel allows the style to move comfortably when worn. The elasticated waistband adds extra flexibility through the waist.
 ```
 
-## Fit & Measurements
+## Fit type
 
-Target: `custom.fit_and_measurements` (multi-line text). 1,962 characters, which leaves 38 before Pelican cuts it off. Anything added here needs something else taken out.
+Target: a new single-line text field named Fit type. Its key isn't created yet; `custom.fit_type` is assumed. 1,370 characters.
 
 ```
-Write a fit statement (no heading), a blank line, then a measurements list.
+Write the fit statement for this product as plain sentences on one line, from "Source: Sizing": size choice, then intended fit, then anything extra.
+- Size Set 8-20: Sizing Advice with the Fit Type value, e.g. "True to size. Choose your usual Motto size for the intended relaxed fit." or "If you are between sizes, choose the smaller size. This style has a relaxed fit."
+- XS-XL: "This style has a flexible fit, so there's some freedom in which size you choose based on whether you prefer a more relaxed or closer fit." Then a guide to the sizes in ACTIVE SIZES as one sentence, e.g. "As a guide: S suits sizes 8–10, M suits size 12 and L suits sizes 14–16." XL suits sizes 18–20. Leave XS out.
+- Combined: "This style is adjustable and designed to fit across a range of sizes." Then the same kind of guide: S/M suits sizes 8–12; M/L suits sizes 14–18. Leave L/XL out.
+- One Size or N/A: "One Size" for jewellery and armbands; "" for bags; for belts, how they fit or adjust, from "Tech pack: Construction".
+A customer-relevant Sizing / Description Note adds to or replaces this, and leads when it is the main instruction. When Sizing Advice is "Special Sizing Note", the note is the instruction. "Tech pack: Construction" and the photos may add where the garment fits (fitted waist, relaxed leg) but never override Sizing Advice.
+No line breaks, bullets or measurements.
+```
 
-Fit statement, from "Source: Sizing": size choice, then intended fit, then anything extra.
-- Size Set 8-20: Sizing Advice with Fit Type, e.g. "True to size. Choose your usual Motto size for the intended relaxed fit." or "If you are between sizes, choose the smaller size. This style has a relaxed fit."
-- XS-XL: "This style has a flexible fit, so there's some freedom in which size you choose based on whether you prefer a more relaxed or closer fit." Then "As a guide:" and a "• " line per size in ACTIVE SIZES: S suits sizes 8–10; M suits size 12; L suits sizes 14–16; XL suits sizes 18–20; none for XS.
-- Combined: "This style is adjustable and designed to fit across a range of sizes." Then the same guide: S/M suits sizes 8–12; M/L suits sizes 14–18; none for L/XL.
-- One Size or N/A: "One Size" for jewellery and armbands; nothing for bags; for belts, how they fit or adjust, from "Tech pack: Construction".
-A customer-relevant Sizing / Description Note adds to or replaces this, and leads when it is the main instruction. Construction and photos may add where it fits (fitted waist, relaxed leg) but never override Sizing Advice.
+## Measurements
 
-Measurements: take only these points from "Tech pack: Measurements", in this order. Give each a customer label, keep its numbers as given and drop any bracketed note.
+Target: `custom.fit_and_measurements` (multi-line text). 1,213 characters.
+
+```
+List this product's measurements from "Tech pack: Measurements". Each line there is already worked out, so keep its numbers and sizes as given, give it a customer label and drop any bracketed note. Take these points, in this order:
 - Pants, shorts: waist; waist fully stretched; hip; in-leg; out-leg; front rise; back rise.
 - Skirt: waist; hip; length from waist to hem.
 - Dress: bust; waist; hip; length from shoulder to hem; sleeve length.
 - Tops, jackets: bust; waist if shaped; hem; length from shoulder to hem; sleeve length.
-- Accessories: the dimensions that show size.
-Uneven hem: shortest and longest length. Format:
+- Belt: total length; width; smallest and largest wearable circumference.
+- Jewellery: chain, bracelet, drop or extension length; width where useful.
+- Bag: width; height; depth; strap or handle length.
+For an uneven hem give the shortest and longest length. For elastic say "unstretched" and "fully stretched". Add another point only when it clearly helps a customer judge fit, length or scale, such as shoulder width on a tailored jacket. Leave out production points such as neck, armhole and collar.
+Format:
 Measurements:
 • Waist circumference: 74cm for Size 8, increasing by 5cm per size
 • In-leg length: 73cm for Size 8, consistent across sizes
-If one part has nothing, write the other alone.
+With no measurements, answer "".
 ```
+
+## General Metafield Rules
+
+Motto's sixth document has no prompt of its own, because Pelican has nowhere to put an instruction that applies to every field. This is where each part of it went.
+
+| Section | Where it went |
+| --- | --- |
+| 1 to 4: Airtable fields, tech pack sections, product images | Mouse. It stages the Airtable fields the five field documents use, with both fallbacks (Description, COLOURWAY), and reads the tech pack into the five sections listed at the top, ignoring the rest. Fibre composition is never taken from the tech pack. Each prompt says how it may use the photos. |
+| 2: BOX#, SKU, PATTERN#, Supplier, Fabric Code, OLD ONLINE DESC | Not staged. No field document uses them. |
+| 5: Metafield independence | Every prompt reads the staged source fields. None reads what another prompt wrote. |
+| 6 and 7: Source priority, missing data | No rules of their own. Both point back to each field's document. |
+| 8: Colourway consistency | Not met. See below. |
+| 9: Writing style | One sentence at the start of Fabric & Feel and Stretch, the two prompts that write free prose. Features already rules out benefit and marketing wording, and Fit type and Measurements are mostly fixed wording. |
+
+Colourway consistency can't be met by a prompt. Pelican writes each product on its own, with that product's photos and a little randomness, so two colourways of one style can come back worded differently. The fixed wording (Stretch sentence 1, the fit statements, the measurement lines) will match across colourways. The free prose (Features bullets, the Fabric & Feel paragraph, Stretch sentences 2 and 3) may not. Matching them would mean writing a style once and copying the result to its other colourways, which is a feature for Mouse or Pelican.
 
 ## What was left out of Motto's documents
 
@@ -126,13 +149,12 @@ If one part has nothing, write the other alone.
 
 ## Where the prompts differ from Motto's documents
 
-1. No bold. The target fields are plain multi-line text, so "How to love me:", "Measurements:" and "As a guide:" are written without asterisks.
+1. No bold. The target fields are plain text, so "How to love me:", "Measurements:" and "As a guide:" are written without asterisks.
 2. "Flag for review" when XS or L/XL is active. Pelican has no way to flag, so the prompt gives no size conversion for those sizes and says nothing more.
-3. Measurements stick to the standard list for each category. The allowance for an extra measurement "when highly confident", and shoulder width on blazers, were dropped to get the prompt under 2,000 characters.
+3. Fit & Measurements is two fields. The fit statement goes to Fit type and the list to Measurements. Fit type is single-line text, which can't hold line breaks, so the XS–XL and Combined size guide is one sentence ("As a guide: S suits sizes 8–10, M suits size 12 and L suits sizes 14–16.") in place of the bulleted list in Motto's document.
 4. Option names follow Airtable: Very Heavy (the documents say Extra Heavy), Tight/Fitted, Regular/Standard.
 5. Care line: any machine wash counts as "Machine washable", and a dry-clean-only label gets no care line. The documents cover neither case.
 
 ## Limits in Pelican that still apply
 
 - Pelican passes the model at most 1,000 characters of each context metafield and 2,500 across all of them. One that doesn't fit in what is left is dropped whole. The eight fields above will not fit in 2,500, so some tech pack sections won't reach the model until that limit is raised.
-- Fit & Measurements has almost no room left. Raising Pelican's 2,000-character limit would give it room, and so would having Mouse stage the fixed XS–XL and Combined size-guide wording, which frees about 300 characters and would let Mouse flag XS and L/XL itself.
