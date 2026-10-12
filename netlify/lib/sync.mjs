@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { applyMode, coerce, jsonValue, parseTarget, resolveTarget } from "./mapping.mjs";
+import { applyMode, coerce, jsonValue, parseTarget, resolveTarget, withPrefix } from "./mapping.mjs";
 import { nativeField } from "./shopify-fields.mjs";
 
 // Works out what a sync would change: applies the saved mappings to an Airtable record and compares the
@@ -160,7 +160,7 @@ export function buildPreview(record, product, mappings, definitions) {
         // Several Airtable fields can feed any other Shopify field (all in merge mode), so apply them in turn.
         group.forEach((m, i) => {
           if (!sources[i]) return reasons.push("The Airtable field no longer exists");
-          let incoming = coerce(sources[i].value, target.kind, target.choices);
+          let incoming = withPrefix(coerce(sources[i].value, target.kind, target.choices), m.prefix);
           if (incoming == null && sources[i].emptyReason) return reasons.push(sources[i].emptyReason);
           if (incoming != null && target.key === "countryCodeOfOrigin") incoming = incoming.toUpperCase();
           const problem = incoming == null ? null : rejected(target, incoming);

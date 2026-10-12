@@ -366,7 +366,7 @@ a { color: inherit; text-underline-offset: 3px; }
 }
 .modes-legend dt { font-size: var(--font-size--xs); text-transform: uppercase; letter-spacing: var(--letter-spacing-md); font-weight: 700; }
 .modes-legend dd { margin: 0.2rem 0 0; color: var(--color-muted); }
-.modes-legend + .subdued { margin-bottom: var(--gap-lg); }
+.modes-legend ~ .subdued { margin-bottom: var(--gap-lg); }
 .notice { margin: 0 0 var(--gap-lg); padding: var(--gap-sm) var(--gap-lg); border-left: 3px solid var(--color-accent); background: var(--color-surface); }
 
 .mapping-head, .mapping-row {
@@ -380,6 +380,10 @@ a { color: inherit; text-underline-offset: 3px; }
 .mapping-row { padding: var(--gap-sm) 0; border-bottom: 1px solid var(--color-border); }
 .mapping-row__arrow { text-align: center; color: var(--color-muted); }
 .mapping-row .link-button { justify-self: end; }
+/* Sits under the Shopify field it belongs to. */
+.mapping-row__prefix { grid-row: 2; grid-column: 3; display: grid; gap: 0.2rem; font-size: var(--font-size--2xs); text-transform: uppercase; letter-spacing: var(--letter-spacing-md); }
+.mapping-row__prefix input { font-size: var(--font-size--sm); padding: 0.6rem 0.75rem; }
+.mapping-row__prefix small { font-size: 1em; color: var(--color-muted); text-transform: none; letter-spacing: 0; white-space: pre-wrap; }
 select {
   width: 100%; font: inherit; font-size: var(--font-size--sm);
   padding: 0.6rem 0.75rem; border: 1px solid var(--color-black); border-radius: 0;
@@ -466,5 +470,6 @@ select:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
   .mapping-head { display: none; }
   .mapping-row { grid-template-columns: 1fr auto; }
   .mapping-row__arrow { display: none; }
-  .mapping-row select { grid-column: 1 / -1; }
+  .mapping-row select, .mapping-row__prefix { grid-column: 1 / -1; }
+  .mapping-row__prefix { grid-row: auto; }
 }

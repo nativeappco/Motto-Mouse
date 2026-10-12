@@ -3,7 +3,7 @@ import { BOX_TABLE_ID, getSchema } from "../lib/airtable.mjs";
 import { groupFields } from "../lib/settings.mjs";
 import { getMetafieldDefinitions, ShopifyNotConfigured } from "../lib/shopify.mjs";
 import { NATIVE_FIELDS, metafieldKind } from "../lib/shopify-fields.mjs";
-import { loadMappings, modesFor, resolveTarget, saveMappings, validateMappings } from "../lib/mapping.mjs";
+import { definitionsFor, loadMappings, modesFor, resolveTarget, saveMappings, validateMappings } from "../lib/mapping.mjs";
 import { describeBuiltins } from "../lib/builtin-mappings.mjs";
 import { extractSources } from "../lib/pdf-extract.mjs";
 
@@ -15,12 +15,14 @@ export default async (req) => {
 
   try {
     const refresh = req.method === "GET" && new URL(req.url).searchParams.has("refresh");
-    const [schema, shopify] = await Promise.all([getSchema(refresh), loadDefinitions(refresh)]);
+    const body = req.method === "PUT" ? await req.json().catch(() => null) : null;
+    // Checked against the mappings being saved, or the ones already saved, so a newly made definition is found.
+    const mapped = body ? body.mappings : (await loadMappings()).mappings;
+    const [schema, shopify] = await Promise.all([getSchema(refresh), loadDefinitions(refresh, mapped)]);
     const table = schema.get(BOX_TABLE_ID);
     if (!table) return json({ error: "Box table not found in Airtable base" }, 500);
 
     if (req.method === "PUT") {
-      const body = await req.json().catch(() => null);
       const result = validateMappings(body?.mappings, table, shopify.definitions);
       if (result.error) return json({ error: result.error }, 400);
       await saveMappings(result.mappings, session.u);
@@ -65,9 +67,9 @@ export default async (req) => {
 };
 
 // Shopify being down or unconfigured shouldn't stop native-field mappings from being edited.
-async function loadDefinitions(force) {
+async function loadDefinitions(force, mappings) {
   try {
-    return { definitions: await getMetafieldDefinitions(force), error: null };
+    return { definitions: force ? await getMetafieldDefinitions(true) : await definitionsFor(mappings), error: null };
   } catch (err) {
     if (!(err instanceof ShopifyNotConfigured)) console.error("[mappings] metafield definitions", err);
     return { definitions: null, error: err instanceof ShopifyNotConfigured ? err.message : "Shopify is not reachable" };
@@ -82,6 +84,7 @@ function buildTargets(definitions) {
       label: f.label,
       kind: f.kind,
       modes: modesFor(f.kind),
+      prefixable: Boolean(f.prefixable),
     })),
   });
   const metafields = (owner, name) => ({

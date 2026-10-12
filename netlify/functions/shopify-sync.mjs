@@ -2,7 +2,7 @@ import { getStore } from "@netlify/blobs";
 import { getSession, json } from "../lib/auth.mjs";
 import { BOX_TABLE_ID, getSchema } from "../lib/airtable.mjs";
 import { addFirstOfFields, underlyingIds, withBuiltins } from "../lib/builtin-mappings.mjs";
-import { loadMappings, resolveTarget } from "../lib/mapping.mjs";
+import { definitionsFor, loadMappings, resolveTarget } from "../lib/mapping.mjs";
 import { MAX_PDF_BYTES, extractSources, firstPdf, promptHash, sourceText } from "../lib/pdf-extract.mjs";
 import { loadExtractPrompt, loadExtractResult } from "../lib/pdf-extract-store.mjs";
 import { loadRecordDetail } from "../lib/record.mjs";
@@ -154,9 +154,11 @@ async function loadExtract(record, source) {
 
 // Matches the box to a product and, if there is one, works out what the saved mappings would change.
 async function preview(recordId, { choose = false, withChanges = false } = {}) {
-  const [saved, definitions, airtable] = await Promise.all([loadMappings(), getMetafieldDefinitions(), boxTable()]);
+  // The definitions are fetched alongside the rest so they're cached by the time the mappings are known.
+  const [saved, airtable] = await Promise.all([loadMappings(), boxTable(), getMetafieldDefinitions()]);
   // The built-in mappings apply to every box, on top of whatever is saved in Mapping.
   const mappings = withBuiltins(saved.mappings, airtable.table);
+  const definitions = await definitionsFor(mappings);
   // Sources of mappings that can't be written (no such Shopify field) aren't loaded, so a PDF isn't read for nothing.
   const { record, extracts } = await loadRecord(airtable, recordId, mappings.filter((m) => resolveTarget(m.target, definitions)));
   const box = boxKeys(record);

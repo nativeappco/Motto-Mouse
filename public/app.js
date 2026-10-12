@@ -17,7 +17,7 @@ const state = {
   savedSelection: new Set(),
   settingsFilter: "",
   mapping: null, // { sources, targets, shopify, updatedAt, updatedBy } from /api/mappings
-  mappingRows: [], // [{ id, sourceFieldId, target, mode }] being edited
+  mappingRows: [], // [{ id, sourceFieldId, target, mode, prefix }] being edited
   savedMappingRows: "[]",
   prompts: null, // the PDF prompts from /api/pdf/prompts
   extracts: new Map(), // "recordId:attachmentId:extract" -> { status, markdown?, error? }, kept so redraws don't lose results
@@ -843,7 +843,7 @@ function setMappingStatus(text, kind = "") {
 
 function applyMapping(data) {
   state.mapping = data;
-  state.mappingRows = data.mappings.map(({ id, sourceFieldId, target, mode }) => ({ id, sourceFieldId, target, mode }));
+  state.mappingRows = data.mappings.map(({ id, sourceFieldId, target, mode, prefix }) => ({ id, sourceFieldId, target, mode, prefix: prefix ?? "" }));
   state.savedMappingRows = JSON.stringify(state.mappingRows);
   $("#mapping-table").textContent = data.table;
   const notice = $("#mapping-notice");
@@ -961,6 +961,7 @@ function renderMappingRow(row, index, saved) {
     row.target = target.value;
     const t = targetById(row.target);
     if (t && !t.modes.includes(row.mode)) row.mode = t.modes.includes("replace") ? "replace" : t.modes[0];
+    if (!t?.prefixable) row.prefix = "";
     // The fields going into a JSON metafield are written together, so a new row follows the others.
     const sibling = t?.kind === "json" && state.mappingRows.find((r) => r !== row && r.target === row.target);
     if (sibling) row.mode = sibling.mode;
@@ -987,13 +988,29 @@ function renderMappingRow(row, index, saved) {
     })
   );
 
+  // Tags can carry a prefix, e.g. "ReviewGroup: " so a reviews app can group products by the tag.
+  let prefix = null;
+  if (known?.prefixable) {
+    const input = el("input", { type: "text", maxlength: "100", placeholder: "e.g. ReviewGroup: ", value: row.prefix, "aria-label": `Row ${index + 1} tag prefix` });
+    const example = el("small", {});
+    // A space at the end of the prefix can't be seen in the box, so show what a tag will look like.
+    const showExample = () => { example.textContent = row.prefix ? `Tags are added as “${row.prefix}value”` : "Tags are added as they are in Airtable"; };
+    input.addEventListener("input", () => {
+      row.prefix = input.value.trimStart();
+      showExample();
+      updateMappingBar();
+    });
+    showExample();
+    prefix = el("label", { class: "mapping-row__prefix" }, [el("span", {}, "Tag prefix (optional)"), input, example]);
+  }
+
   const remove = el("button", { class: "link-button", type: "button", "aria-label": `Remove row ${index + 1}` }, "Remove");
   remove.addEventListener("click", () => {
     state.mappingRows.splice(index, 1);
     renderMapping();
   });
 
-  return el("div", { class: "mapping-row" }, [source, el("span", { class: "mapping-row__arrow", "aria-hidden": "true" }, "→"), target, modeGroup, remove]);
+  return el("div", { class: "mapping-row" }, [source, el("span", { class: "mapping-row__arrow", "aria-hidden": "true" }, "→"), target, prefix, modeGroup, remove]);
 }
 
 function updateMappingBar() {
@@ -1006,7 +1023,7 @@ function updateMappingBar() {
 }
 
 $("#mapping-add").addEventListener("click", () => {
-  state.mappingRows.push({ id: crypto.randomUUID(), sourceFieldId: "", target: "", mode: "replace" });
+  state.mappingRows.push({ id: crypto.randomUUID(), sourceFieldId: "", target: "", mode: "replace", prefix: "" });
   renderMapping();
   $("#mapping-rows .mapping-row:last-of-type select")?.focus();
 });

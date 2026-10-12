@@ -1,13 +1,14 @@
 // Native Shopify product and variant fields that can be mapped to.
 // `path` is where the value goes in ProductSetInput / ProductVariantsBulkInput when syncing.
 // `kind` drives value coercion and which update modes make sense (see mapping.mjs).
+// `prefixable` fields can have a prefix set on a mapping, put in front of each value it writes.
 export const PRODUCT_FIELDS = [
   { key: "title", label: "Title", kind: "text", path: "title" },
   { key: "descriptionHtml", label: "Description", kind: "html", path: "descriptionHtml" },
   { key: "handle", label: "Handle (URL)", kind: "text", path: "handle" },
   { key: "vendor", label: "Vendor", kind: "text", path: "vendor" },
   { key: "productType", label: "Product type", kind: "text", path: "productType" },
-  { key: "tags", label: "Tags", kind: "list", path: "tags" },
+  { key: "tags", label: "Tags", kind: "list", path: "tags", prefixable: true },
   { key: "status", label: "Status", kind: "enum", path: "status", choices: ["ACTIVE", "DRAFT", "ARCHIVED"] },
   { key: "seoTitle", label: "SEO title", kind: "text", path: "seo.title" },
   { key: "seoDescription", label: "SEO description", kind: "multiline", path: "seo.description" },

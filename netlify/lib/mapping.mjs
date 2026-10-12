@@ -1,5 +1,6 @@
 import { getStore } from "@netlify/blobs";
 import { extractSources } from "./pdf-extract.mjs";
+import { getMetafieldDefinitions } from "./shopify.mjs";
 import { metafieldKind, nativeField } from "./shopify-fields.mjs";
 
 // ---------- Update modes ----------
@@ -31,7 +32,7 @@ export function resolveTarget(target, definitions) {
   if (!t) return null;
   if (t.type === "native") {
     const f = nativeField(t.owner, t.key);
-    return f && { ...t, id: target, label: f.label, kind: f.kind, choices: f.choices ?? null };
+    return f && { ...t, id: target, label: f.label, kind: f.kind, choices: f.choices ?? null, prefixable: Boolean(f.prefixable) };
   }
   const def = definitions?.[t.owner]?.find((d) => d.namespace === t.namespace && d.key === t.key);
   return def && {
@@ -42,6 +43,21 @@ export function resolveTarget(target, definitions) {
     metafieldType: def.type,
     choices: def.choices,
   };
+}
+
+// A copy of the definitions this recent is used as it is, so a run of previews doesn't fetch them each time.
+const FRESH_MS = 10 * 1000;
+
+// The metafield definitions these mappings are checked against. Each function keeps its own cached copy, so a
+// definition made in Shopify since then (and already mapped, on a page that had a newer copy) can be missing
+// from it. When a mapped metafield isn't in the cached copy, the definitions are fetched again.
+export async function definitionsFor(mappings, load = getMetafieldDefinitions) {
+  const cached = await load();
+  const missing = (Array.isArray(mappings) ? mappings : []).some(
+    (m) => parseTarget(m?.target)?.type === "metafield" && !resolveTarget(m.target, cached)
+  );
+  if (!missing || Date.now() - Date.parse(cached.fetchedAt) < FRESH_MS) return cached;
+  return load(true);
 }
 
 // ---------- Storage ----------
@@ -61,6 +77,9 @@ export async function saveMappings(mappings, username) {
   await store().setJSON(KEY, value);
   return value;
 }
+
+// A tag is at most 255 characters in Shopify, so the prefix has to leave room for the value.
+const MAX_PREFIX = 100;
 
 // Checks a list of mappings from the client. Returns { mappings } or { error }.
 export function validateMappings(input, table, definitions) {
@@ -84,8 +103,16 @@ export function validateMappings(input, table, definitions) {
     if (!modesFor(target.kind).includes(m.mode)) {
       return { error: `${row}: ${target.label} can't use “${m.mode}”; choose ${modesFor(target.kind).join(" or ")}` };
     }
+    // Leading spaces go; trailing ones stay, so "ReviewGroup: " can be followed by the value.
+    const prefix = typeof m.prefix === "string" ? m.prefix.trimStart() : "";
+    if (prefix) {
+      if (!target.prefixable) return { error: `${row}: ${target.label} can't have a prefix` };
+      if (prefix.length > MAX_PREFIX || /[,\n\r]/.test(prefix)) {
+        return { error: `${row}: a prefix can be up to ${MAX_PREFIX} characters, without commas or line breaks` };
+      }
+    }
     const id = typeof m.id === "string" && /^[\w-]{1,40}$/.test(m.id) ? m.id : crypto.randomUUID();
-    out.push({ id, sourceFieldId: m.sourceFieldId, target: m.target, mode: m.mode });
+    out.push({ id, sourceFieldId: m.sourceFieldId, target: m.target, mode: m.mode, ...(prefix && { prefix }) });
     if (!byTarget.has(m.target)) byTarget.set(m.target, []);
     byTarget.get(m.target).push({ row: i + 1, mode: m.mode, label: target.label, kind: target.kind });
   }
@@ -144,6 +171,11 @@ export function coerce(value, kind, choices = null) {
       if (choices?.length) return choices.includes(parts[0]) ? parts[0] : null;
       return parts.join(", ");
   }
+}
+
+// Puts a mapping's prefix in front of each item of a coerced list, e.g. "ReviewGroup: " + "10511".
+export function withPrefix(items, prefix) {
+  return prefix && Array.isArray(items) ? dedupe(items.map((item) => `${prefix}${item}`)) : items;
 }
 
 // An Airtable cell value as it goes into a JSON metafield, keeping numbers, booleans and lists as they are.

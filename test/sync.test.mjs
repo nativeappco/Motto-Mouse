@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { boxKeys, colourScore, normaliseColour, pickAuto, rankCandidates } from "../netlify/lib/shopify-match.mjs";
-import { jsonValue, validateMappings } from "../netlify/lib/mapping.mjs";
+import { definitionsFor, jsonValue, validateMappings } from "../netlify/lib/mapping.mjs";
 import { addFirstOfFields, BUILTINS, builtinMappings, describeBuiltins, withBuiltins } from "../netlify/lib/builtin-mappings.mjs";
 import { measurementLines } from "../netlify/lib/measurements.mjs";
 import { EXTRACTS, extractSources, firstPdf, promptHash, sectionText, sourceText } from "../netlify/lib/pdf-extract.mjs";
@@ -91,6 +91,17 @@ test("merge mappings to the same field are applied one after another", () => {
   assert.equal(rows[0].action, "set");
   assert.deepEqual(changes[0].value, ["tops", "lmtbyb", "Wrap", "Cami"]);
   assert.equal(changes[0].path, "tags");
+});
+
+test("a tag mapping's prefix goes in front of each tag it adds, and only its own", () => {
+  const prefixed = { ...mapping("fldTags", "product:tags", "merge"), prefix: "ReviewGroup: " };
+  const { changes } = buildPreview(record, product(), [prefixed, mapping("fldRange", "product:tags", "merge")], definitions);
+  assert.deepEqual(changes[0].value, ["tops", "lmtbyb", "ReviewGroup: Wrap", "ReviewGroup: Cami"]);
+
+  // Syncing again adds nothing once the product has the prefixed tags.
+  const synced = product();
+  synced.values.tags = changes[0].value;
+  assert.equal(buildPreview(record, synced, [prefixed], definitions).changes.length, 0);
 });
 
 test("replace, new and empty values behave as the modes describe", () => {
@@ -303,6 +314,44 @@ test("several rows may share a JSON metafield, but only in one mode", () => {
 });
 
 // ---------- Tech pack ----------
+test("a prefix is kept on tag mappings and refused anywhere else", () => {
+  const tags = (prefix) => validateMappings([{ ...mapping("fldTags", "product:tags", "merge"), prefix }], table, jsonDefinitions);
+  assert.equal(tags("  ReviewGroup: ").mappings[0].prefix, "ReviewGroup: ");
+  assert.equal("prefix" in tags("").mappings[0], false);
+  assert.equal("prefix" in tags("   ").mappings[0], false);
+  assert.match(tags("a,b").error, /without commas/);
+  assert.match(tags("x".repeat(101)).error, /up to 100 characters/);
+  assert.match(validateMappings([{ ...mapping("fldTags", "product:title", "replace"), prefix: "x" }], table, jsonDefinitions).error, /Title can't have a prefix/);
+});
+
+test("definitions are fetched again when a mapped metafield isn't in the cached copy", async () => {
+  const added = { namespace: "custom", key: "review_group", name: "Review group", type: "single_line_text_field", choices: null };
+  const loader = (age) => {
+    const calls = [];
+    const load = async (force = false) => {
+      calls.push(force);
+      return force
+        ? { product: [...definitions.product, added], variant: [], fetchedAt: new Date().toISOString() }
+        : { ...definitions, fetchedAt: new Date(Date.now() - age).toISOString() };
+    };
+    return { calls, load };
+  };
+  const known = [mapping("fldStretch", "product:metafield:custom.stretch", "replace"), mapping("fldTags", "product:tags", "merge")];
+  const fresh = [...known, mapping("fldRange", "product:metafield:custom.review_group", "replace")];
+
+  const stale = loader(60_000);
+  assert.equal((await definitionsFor(fresh, stale.load)).product.length, 3);
+  assert.deepEqual(stale.calls, [false, true]);
+
+  // Nothing is missing, or the copy was only just fetched: it's used as it is.
+  const complete = loader(60_000);
+  await definitionsFor(known, complete.load);
+  assert.deepEqual(complete.calls, [false]);
+  const justFetched = loader(1_000);
+  await definitionsFor(fresh, justFetched.load);
+  assert.deepEqual(justFetched.calls, [false]);
+});
+
 test("the tech pack is a mapping source when its PDF field exists", () => {
   const sources = extractSources(table);
   assert.deepEqual(sources[0], { id: "extract:tech-pack", extract: "tech-pack", label: "Tech pack", name: "Tech pack text", fieldId: "fldPdf", fieldName: "PDF BULK TECH PACK" });
