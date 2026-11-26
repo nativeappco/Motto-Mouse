@@ -1,5 +1,5 @@
 import { BOX_TABLE_ID, getSchema } from "./airtable.mjs";
-import { addFirstOfFields, addRuleFields, underlyingIds, withBuiltins } from "./builtin-mappings.mjs";
+import { addFirstOfFields, addRuleFields, ruleFieldIds, underlyingIds, withBuiltins } from "./builtin-mappings.mjs";
 import { definitionsFor, loadMappings, resolveTarget } from "./mapping.mjs";
 import { MAX_PDF_BYTES, extractSources, firstPdf, promptHash, sourceText } from "./pdf-extract.mjs";
 import { loadExtractPrompt, loadExtractResult } from "./pdf-extract-store.mjs";
@@ -28,11 +28,11 @@ export async function boxTable() {
 export async function loadRecord({ schema, table }, recordId, mappings) {
   const mapped = new Set(mappings.map((m) => m.sourceFieldId));
   const sources = extractSources(table).filter((s) => mapped.has(s.id));
-  const only = new Set([...mapped, ...[...mapped].flatMap(underlyingIds), ...sources.map((s) => s.fieldId)]);
+  const only = new Set([...mapped, ...[...mapped].flatMap(underlyingIds), ...ruleFieldIds(mappings), ...sources.map((s) => s.fieldId)]);
   for (const f of table.fields) if (MATCH_FIELDS.includes(f.name.trim())) only.add(f.id);
   const record = await loadRecordDetail(schema, table, recordId, { only });
   addFirstOfFields(record, mapped);
-  addRuleFields(record, mapped);
+  addRuleFields(record, mappings);
 
   // One PDF is read once, however many of its sections are mapped.
   const perExtract = new Map(sources.map((s) => [s.extract, s]));

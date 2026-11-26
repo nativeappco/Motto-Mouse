@@ -2,17 +2,17 @@ import { getStore } from "@netlify/blobs";
 import { BOX_TABLE_ID, getSchema, listRecordsPage } from "./airtable.mjs";
 import { BUILTINS, builtinTarget } from "./builtin-mappings.mjs";
 import { preview } from "./box-sync.mjs";
-import { matchChoices } from "./mapping.mjs";
+import { loadMappings, matchChoices } from "./mapping.mjs";
 import { getMetafieldDefinitions, graphql } from "./shopify.mjs";
 import { applyChanges } from "./shopify-products.mjs";
 
 // Jobs that work through the whole catalogue in the background (functions/backfill-background.mjs):
 //   audit               – read only: what Shopify holds now (old subcategory values, templates, bundle tags)
 //   group               – re-syncs every product a box with a REX Description matches: the related product
-//                         group, plus the bundle template and tag (`rules`) and any saved mappings asked for
-//                         (`targets`, e.g. the subcategories)
+//                         group, plus the Shopify fields asked for (`targets`: the template, tags,
+//                         subcategories…), from the mappings and rules saved in Mapping
 //   subcategory-migrate – copies the old free-text subcategory metafield(s) into the new one with preset
-//                         choices, through the migration table saved in Mouse
+//                         choices, through the rules in Mapping that write to the new one
 // A run stops before the function's time is up and carries on in a new invocation from where it got to.
 
 export const JOBS = ["audit", "group", "subcategory-migrate"];
@@ -33,12 +33,6 @@ export async function listJobs() {
     .map(({ state, report, ...job }) => ({ ...job, counts: report?.counts ?? {} }))
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
-
-// Old subcategory value -> the new subcategories it becomes ([] to drop it), as Martin and Motto agree it.
-const MIGRATION_KEY = "config/subcategory-migration";
-export const loadMigration = async () => (await store().get(MIGRATION_KEY, { type: "json" })) ?? { table: {}, updatedAt: null };
-export const saveMigration = (table, username) =>
-  store().setJSON(MIGRATION_KEY, { table, updatedAt: new Date().toISOString(), updatedBy: username });
 
 function syncLog() {
   return getStore({ name: "sync-log", consistency: "strong" });
@@ -163,13 +157,11 @@ export function colourwayKey(fields) {
   return pattern && colourway ? `pc:${pattern}|${colourway}` : null;
 }
 
-// The mappings the group backfill applies: the group, the rules when asked for, and the saved mappings to the
-// Shopify fields in `targets`. Mappings that read a tech pack PDF are never applied, as that means a Gemini
-// call per product.
-export const groupMappings = (rules, targets = []) => (m) =>
-  m.target === GROUP_TARGET ||
-  (rules && Boolean(m.rule)) ||
-  (targets.includes(m.target) && !m.rule && !m.builtin && !m.sourceFieldId.startsWith("extract:"));
+// The mappings the group backfill applies: the group, and the saved mappings and rules that write to the Shopify
+// fields in `targets`. Mappings that read a tech pack PDF are never applied, as that means a Gemini call per
+// product.
+export const groupMappings = (targets = []) => (m) =>
+  m.target === GROUP_TARGET || (targets.includes(m.target) && !m.builtin && !m.sourceFieldId.startsWith("extract:"));
 
 async function groupStep(job, deadline) {
   const state = job.state;
@@ -233,7 +225,7 @@ async function groupStep(job, deadline) {
 async function syncBox(job, recordId, box, products, attempt = 0) {
   let state;
   try {
-    state = await preview(recordId, { withChanges: true, only: groupMappings(job.options.rules, job.options.targets) });
+    state = await preview(recordId, { withChanges: true, only: groupMappings(job.options.targets) });
   } catch (err) {
     // Airtable asks for 30 seconds' rest after too many requests.
     if (/^Airtable 429/.test(err.message) && attempt < 3) {
@@ -300,6 +292,17 @@ async function boxTableFields() {
 }
 
 // ---------- Subcategory migration ----------
+// The migration table: each rule in Mapping that writes to `target` turns its Airtable value into its value,
+// and the same turns an old Shopify value into the new one. { "old value": ["New", …] }
+export function migrationTable(saved, target) {
+  const table = {};
+  for (const m of saved) {
+    if (m.mode !== "rules") continue;
+    for (const r of m.rules ?? []) if (r.target === target) (table[r.is] ??= []).push(r.value);
+  }
+  return table;
+}
+
 const choiceKey = (s) => String(s).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
 
 // An old value split into its parts, for old fields that hold several subcategories as "Midi, Wrap".
@@ -338,8 +341,8 @@ async function migrateStep(job, deadline) {
   const target = definitions.product.find((d) => `${d.namespace}.${d.key}` === to);
   if (!target) throw new Error(`Create the metafield definition ${to} in Shopify first`);
   if (target.type !== "list.single_line_text_field") throw new Error(`${to} is a ${target.type} metafield; it has to be list.single_line_text_field`);
-  const { table } = await loadMigration();
-  if (Object.keys(table).length === 0) throw new Error("Save the subcategory migration table first");
+  const table = migrationTable((await loadMappings()).mappings, `product:metafield:${to}`);
+  if (Object.keys(table).length === 0) throw new Error(`Add rules that write to ${to} on the Mapping page first`);
 
   const t = splitMetafield(to);
   const olds = from
@@ -368,7 +371,7 @@ async function migrateStep(job, deadline) {
       const line = { productId: p.id, product: p.title, field: to };
       const existing = metafieldItems(p.next?.value);
       const { items, unmapped, invalid } = migrateValues(oldItems, existing, table, target.choices);
-      for (const value of unmapped) note(job.report, "unmapped", { ...line, before: value, detail: "Not in the migration table" });
+      for (const value of unmapped) note(job.report, "unmapped", { ...line, before: value, detail: "No rule for this value in Mapping" });
       for (const value of invalid) note(job.report, "invalid", { ...line, after: value, detail: `The table maps to a value that isn't one of ${to}'s choices` });
       if (items.length === existing.length) {
         note(job.report, "unchanged", { ...line, before: oldItems });

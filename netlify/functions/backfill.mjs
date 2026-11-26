@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getSession, json } from "../lib/auth.mjs";
 import { DRY_RUN_ONLY } from "../lib/box-sync.mjs";
-import { JOBS, listJobs, loadJob, loadMigration, newReport, reportCsv, saveJob, saveMigration, startRun } from "../lib/backfill.mjs";
+import { JOBS, listJobs, loadJob, newReport, reportCsv, saveJob, startRun } from "../lib/backfill.mjs";
 
 // Starts and reports on catalogue-wide jobs (lib/backfill.mjs); the work itself is done by backfill-background.mjs.
 //   GET  /api/backfill                    – recent jobs
@@ -11,7 +11,6 @@ import { JOBS, listJobs, loadJob, loadMigration, newReport, reportCsv, saveJob, 
 //                                           Writing jobs are dry runs unless dryRun is false.
 //   POST /api/backfill                    – { stop: id } ends a job after its current page;
 //                                           { resume: id } carries on a stopped, failed or stuck job from where it got to
-//   GET/PUT /api/backfill/migration       – the old -> new subcategory table: { table: { "old value": ["New"] } }
 
 const METAFIELD = /^[A-Za-z0-9_-]{1,64}\.[A-Za-z0-9_-]{1,64}$/;
 
@@ -21,8 +20,6 @@ export default async (req) => {
   const url = new URL(req.url);
 
   try {
-    if (url.pathname.endsWith("/migration")) return migration(req, session);
-
     if (req.method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return json({ jobs: await listJobs() });
@@ -47,7 +44,6 @@ export default async (req) => {
 
     const options = {};
     if (body.type === "group") {
-      options.rules = body.options?.rules === true;
       const targets = [].concat(body.options?.targets ?? []);
       if (targets.length > 50 || !targets.every((t) => typeof t === "string" && /^(product|variant):/.test(t))) {
         return json({ error: "options.targets must be a list of Shopify fields from Mapping" }, 400);
@@ -123,24 +119,8 @@ async function control(req, session, body) {
   return json({ id: job.id, status: job.status }, 202);
 }
 
-async function migration(req, session) {
-  if (req.method === "GET") return json(await loadMigration());
-  if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405);
-  const table = (await req.json().catch(() => null))?.table;
-  const valid =
-    table &&
-    typeof table === "object" &&
-    !Array.isArray(table) &&
-    Object.keys(table).length <= 2000 &&
-    Object.entries(table).every(([from, to]) => from.trim() && [].concat(to ?? []).every((v) => typeof v === "string" && v.trim()));
-  if (!valid) return json({ error: 'table must map each old value to a new value or a list of them, e.g. { "elastic waist": ["Pants"] }' }, 400);
-  const clean = Object.fromEntries(Object.entries(table).map(([from, to]) => [from.trim(), [].concat(to ?? []).map((v) => v.trim())]));
-  const saved = await saveMigration(clean, session.u);
-  return json(saved ?? { table: clean });
-}
-
 function isJobId(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value ?? "");
 }
 
-export const config = { path: ["/api/backfill", "/api/backfill/migration"] };
+export const config = { path: "/api/backfill" };

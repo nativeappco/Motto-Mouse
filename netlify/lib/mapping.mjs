@@ -1,4 +1,5 @@
 import { getStore } from "@netlify/blobs";
+import { mappingTargets, ruleWriteMode } from "./builtin-mappings.mjs";
 import { extractSources } from "./pdf-extract.mjs";
 import { getMetafieldDefinitions } from "./shopify.mjs";
 import { metafieldKind, nativeField } from "./shopify-fields.mjs";
@@ -7,7 +8,12 @@ import { metafieldKind, nativeField } from "./shopify-fields.mjs";
 // merge   – append to what's already in Shopify (tags, list metafields, text); for JSON, add or update keys
 // replace – overwrite whatever is in Shopify
 // new     – only fill the field if it's currently empty in Shopify
+// A mapping can instead be in "rules" mode: if-statements on its Airtable field (see builtin-mappings.mjs).
 export const MODES = ["merge", "replace", "new"];
+
+// The kinds of Shopify field a rule can write its value to.
+export const RULE_KINDS = new Set(["text", "list", "multiline"]);
+const MAX_RULES = 300;
 
 // Kinds where appending is meaningful. Everything else is a single value, so only replace/new apply.
 const MERGEABLE = new Set(["list", "text", "multiline", "html"]);
@@ -53,9 +59,9 @@ const FRESH_MS = 10 * 1000;
 // from it. When a mapped metafield isn't in the cached copy, the definitions are fetched again.
 export async function definitionsFor(mappings, load = getMetafieldDefinitions) {
   const cached = await load();
-  const missing = (Array.isArray(mappings) ? mappings : []).some(
-    (m) => parseTarget(m?.target)?.type === "metafield" && !resolveTarget(m.target, cached)
-  );
+  const missing = (Array.isArray(mappings) ? mappings : [])
+    .flatMap(mappingTargets)
+    .some((t) => parseTarget(t)?.type === "metafield" && !resolveTarget(t, cached));
   if (!missing || Date.now() - Date.parse(cached.fetchedAt) < FRESH_MS) return cached;
   return load(true);
 }
@@ -93,6 +99,21 @@ export function validateMappings(input, table, definitions) {
     const row = `Row ${i + 1}`;
     if (!m || typeof m !== "object") return { error: `${row}: invalid mapping` };
     if (!sourceIds.has(m.sourceFieldId)) return { error: `${row}: choose an Airtable field` };
+    const id = typeof m.id === "string" && /^[\w-]{1,40}$/.test(m.id) ? m.id : crypto.randomUUID();
+    if (m.mode === "rules") {
+      const result = validateRules(m.rules, definitions, row);
+      if (result.error) return result;
+      out.push({ id, sourceFieldId: m.sourceFieldId, target: null, mode: "rules", rules: result.rules });
+      // The rules for one Shopify field are written together, whichever rows they're on.
+      for (const r of result.labelled) {
+        if (!byTarget.has(r.target)) byTarget.set(r.target, []);
+        const rows = byTarget.get(r.target);
+        const entry = rows.find((x) => x.rules);
+        if (entry) entry.row = [...entry.rowSet.add(i + 1)].join(", ");
+        else rows.push({ row: i + 1, rowSet: new Set([i + 1]), mode: ruleWriteMode(r.target), label: r.label, kind: r.kind, rules: true });
+      }
+      continue;
+    }
     const t = parseTarget(m.target);
     if (!t) return { error: `${row}: choose a Shopify field` };
     if (t.type === "metafield" && !definitions) {
@@ -111,7 +132,6 @@ export function validateMappings(input, table, definitions) {
         return { error: `${row}: a prefix can be up to ${MAX_PREFIX} characters, without commas or line breaks` };
       }
     }
-    const id = typeof m.id === "string" && /^[\w-]{1,40}$/.test(m.id) ? m.id : crypto.randomUUID();
     out.push({ id, sourceFieldId: m.sourceFieldId, target: m.target, mode: m.mode, ...(prefix && { prefix }) });
     if (!byTarget.has(m.target)) byTarget.set(m.target, []);
     byTarget.get(m.target).push({ row: i + 1, mode: m.mode, label: target.label, kind: target.kind });
@@ -130,12 +150,45 @@ export function validateMappings(input, table, definitions) {
     }
     // Several Airtable fields can feed any other Shopify field only if they all append to it.
     if (rows.some((r) => r.mode !== "merge")) {
+      if (rows.some((r) => r.rules)) {
+        return { error: `Rows ${rows.map((r) => r.row).join(", ")} all write to ${rows[0].label}. Use rules or a mapping for it, not both.` };
+      }
       return {
         error: `Rows ${rows.map((r) => r.row).join(", ")} all write to ${rows[0].label}. Set them all to Merge, or remove the extras.`,
       };
     }
   }
   return { mappings: out };
+}
+
+// Checks the if-statements of a rules row. Returns { rules } (values in the spelling Shopify's choices have)
+// or { error }. Each rule also carries its target's label and kind, which the caller drops.
+function validateRules(input, definitions, row) {
+  if (!Array.isArray(input) || input.length === 0) return { error: `${row}: add at least one rule` };
+  if (input.length > MAX_RULES) return { error: `${row}: up to ${MAX_RULES} rules` };
+  const rules = [];
+  for (const [j, r] of input.entries()) {
+    const at = `${row}, rule ${j + 1}`;
+    const is = typeof r?.is === "string" ? r.is.trim() : "";
+    let value = typeof r?.value === "string" ? r.value.trim() : "";
+    if (!is || is.length > 200) return { error: `${at}: enter the Airtable value (up to 200 characters)` };
+    const t = parseTarget(r.target);
+    if (!t) return { error: `${at}: choose the Shopify field` };
+    if (t.owner !== "product") return { error: `${at}: rules write to product fields only` };
+    if (t.type === "metafield" && !definitions) return { error: `${at}: can't check metafields because Shopify isn't reachable` };
+    const target = resolveTarget(r.target, definitions);
+    if (!target) return { error: `${at}: “${r.target}” is not a Shopify field or metafield definition` };
+    if (!RULE_KINDS.has(target.kind)) return { error: `${at}: a rule can't write to ${target.label}; choose a text or list field` };
+    if (!value || value.length > 255) return { error: `${at}: enter the value for ${target.label} (up to 255 characters)` };
+    if (target.kind === "list" && /[,\n]/.test(value)) return { error: `${at}: one value per rule; add another rule for a second value` };
+    if (target.choices?.length) {
+      const [choice] = matchChoices([value], target.choices).items;
+      if (!choice) return { error: `${at}: “${value}” isn't one of ${target.label}'s choices in Shopify` };
+      value = choice;
+    }
+    rules.push({ is, target: r.target, value, label: target.label, kind: target.kind });
+  }
+  return { rules: rules.map(({ label, kind, ...r }) => r), labelled: rules };
 }
 
 // ---------- Value handling (used when syncing) ----------

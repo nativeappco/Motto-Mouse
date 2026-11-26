@@ -826,15 +826,24 @@ async function refreshOpenDetail() {
 }
 
 // ---------- Shopify mapping ----------
-const MODE_LABELS = { merge: "Merge", replace: "Replace", new: "New" };
+const MODE_LABELS = { merge: "Merge", replace: "Replace", new: "New", rules: "Rules" };
 const MODE_HELP = {
   merge: "Add to what's already in Shopify",
   replace: "Overwrite the Shopify value",
   new: "Only fill the field if it's empty in Shopify",
+  rules: "If the Airtable field holds a value, write another value to a Shopify field",
 };
 
+// A row as it's saved: a rules row has rules and no Shopify field of its own; any other row the reverse.
+function rowForSave({ id, sourceFieldId, target, mode, prefix, rules }) {
+  if (mode === "rules") return { id, sourceFieldId, mode, rules: (rules ?? []).map(({ is, target: t, value }) => ({ is, target: t, value })) };
+  return { id, sourceFieldId, target, mode, prefix: prefix ?? "" };
+}
+
+const rowsJson = (rows) => JSON.stringify(rows.map(rowForSave));
+
 function isMappingDirty() {
-  return Boolean(state.mapping) && JSON.stringify(state.mappingRows) !== state.savedMappingRows;
+  return Boolean(state.mapping) && rowsJson(state.mappingRows) !== state.savedMappingRows;
 }
 
 function setMappingStatus(text, kind = "") {
@@ -845,8 +854,15 @@ function setMappingStatus(text, kind = "") {
 
 function applyMapping(data) {
   state.mapping = data;
-  state.mappingRows = data.mappings.map(({ id, sourceFieldId, target, mode, prefix }) => ({ id, sourceFieldId, target, mode, prefix: prefix ?? "" }));
-  state.savedMappingRows = JSON.stringify(state.mappingRows);
+  state.mappingRows = data.mappings.map(({ id, sourceFieldId, target, mode, prefix, rules }) => ({
+    id,
+    sourceFieldId,
+    target: target ?? "",
+    mode,
+    prefix: prefix ?? "",
+    ...(mode === "rules" ? { rules: rules.map((r) => ({ ...r })) } : {}),
+  }));
+  state.savedMappingRows = rowsJson(state.mappingRows);
   $("#mapping-table").textContent = data.table;
   const notice = $("#mapping-notice");
   notice.hidden = data.shopify.connected;
@@ -900,7 +916,6 @@ function renderMapping() {
     ...rows
   );
   renderBuiltIn(m.builtIn ?? []);
-  renderRules(m.rules ?? []);
   updateMappingBar();
 }
 
@@ -935,35 +950,6 @@ function renderBuiltIn(builtIn) {
   );
 }
 
-const RULE_STATUS = {
-  ready: () => "Ready",
-  waiting: (r) => `Waiting for the ${r.adds ? "tag" : "template name"} to be set in Mouse`,
-  overridden: () => "Replaced by a mapping above",
-};
-
-// Values Mouse works out from a box (builtin-mappings.mjs RULES), e.g. the bundle template for Blogger products.
-function renderRules(rules) {
-  $("#mapping-rules").replaceChildren(
-    ...(rules.length
-      ? [
-          el("h2", { class: "h5 settings-heading" }, "Built-in rules"),
-          el("p", { class: "subdued" }, "Set from the box's Sub-Category and Fabric Tag. Products that meet no condition are left as they are. Mouse only changes a template that's the default or one of these bundle templates, so a template chosen by hand in Shopify stays. Tags are only ever added."),
-          el("p", { class: "subdued" }, "To add another bundle, send Native App Co the Airtable field and value that mark the products (e.g. Fabric Tag is Tencel Denim), the theme template they should use and the tag the badge needs. The template has to exist in the live theme first."),
-          el("table", { class: "sync-table builtin-table" }, [
-            el("thead", {}, el("tr", {}, ["Shopify field", "When", "Status"].map((h) => el("th", { scope: "col" }, h)))),
-            el("tbody", {}, rules.map((r) =>
-              el("tr", {}, [
-                el("th", { scope: "row" }, [r.name, el("small", {}, r.adds ? "Adds a tag" : "Theme template")]),
-                el("td", {}, r.when.map((w) => `${w.field} is ${w.is} → ${w.value ? `“${w.value}”` : "not set yet"}`).join(" · ")),
-                el("td", { class: r.status === "ready" ? "" : "muted" }, RULE_STATUS[r.status](r)),
-              ])
-            )),
-          ]),
-        ]
-      : [])
-  );
-}
-
 function renderMappingRow(row, index, saved) {
   const source = el("select", { "aria-label": `Row ${index + 1} Airtable field` }, [
     el("option", { value: "" }, "Choose Airtable field…"),
@@ -983,8 +969,8 @@ function renderMappingRow(row, index, saved) {
         el("optgroup", { label: g.name }, g.fields.map((f) => el("option", { value: f.id, title: f.detail ?? "" }, f.detail ? `${f.label} (${f.detail.split(" · ")[0]})` : f.label)))
       ),
   ]);
-  const known = targetById(row.target);
-  if (row.target && !known) {
+  const known = row.mode === "rules" ? null : targetById(row.target);
+  if (row.target && !known && row.mode !== "rules") {
     const label = saved?.targetMissing ? "Missing metafield (deleted in Shopify)" : row.target.replace(/^(product|variant):metafield:/, "$1 metafield ");
     target.prepend(el("option", { value: row.target }, label));
   }
@@ -1001,14 +987,25 @@ function renderMappingRow(row, index, saved) {
   });
 
   // If the target isn't known (Shopify offline), allow every mode and let the server check on save.
-  const modes = known?.modes ?? ["merge", "replace", "new"];
+  const modes = [...(known?.modes ?? ["merge", "replace", "new"]), "rules"];
   const modeGroup = el("div", { class: "segmented", role: "radiogroup", "aria-label": `Row ${index + 1} existing data` },
-    ["merge", "replace", "new"].map((mode) => {
+    ["merge", "replace", "new", "rules"].map((mode) => {
       const input = el("input", { type: "radio", name: `mode-${row.id}`, value: mode });
       input.checked = row.mode === mode;
       input.disabled = !modes.includes(mode);
       input.addEventListener("change", () => {
+        const wasRules = row.mode === "rules";
         row.mode = mode;
+        if (mode === "rules") {
+          if (!row.rules?.length) row.rules = [{ is: "", target: "", value: "" }];
+          return renderMapping();
+        }
+        if (wasRules) {
+          // Back to a plain mapping: the Shopify field has to be chosen again, unless the row had one before.
+          const t = targetById(row.target);
+          if (t && !t.modes.includes(row.mode)) row.mode = t.modes.includes("replace") ? "replace" : t.modes[0];
+          return renderMapping();
+        }
         if (known?.kind !== "json") return updateMappingBar();
         for (const r of state.mappingRows) if (r.target === row.target) r.mode = mode;
         renderMapping();
@@ -1042,13 +1039,99 @@ function renderMappingRow(row, index, saved) {
     renderMapping();
   });
 
+  if (row.mode === "rules") {
+    return el("div", { class: "mapping-row" }, [
+      source,
+      el("span", { class: "mapping-row__arrow", "aria-hidden": "true" }, "→"),
+      el("span", { class: "muted mapping-row__note" }, "Set by each rule below"),
+      modeGroup,
+      remove,
+      renderRuleLines(row, index),
+    ]);
+  }
   return el("div", { class: "mapping-row" }, [source, el("span", { class: "mapping-row__arrow", "aria-hidden": "true" }, "→"), target, prefix, modeGroup, remove]);
+}
+
+function sourceById(id) {
+  for (const g of state.mapping.sources) {
+    const f = g.fields.find((x) => x.id === id);
+    if (f) return f;
+  }
+  return null;
+}
+
+// A rules row's if-statements: when the Airtable field holds this value, write that value to this Shopify field.
+function renderRuleLines(row, index) {
+  const source = sourceById(row.sourceFieldId);
+  const airtableList = source?.choices?.length ? `rule-airtable-${row.id}` : null;
+  const ruleTargets = state.mapping.targets
+    .map((g) => ({ ...g, fields: g.fields.filter((f) => f.ruleable) }))
+    .filter((g) => g.fields.length);
+
+  const lines = row.rules.map((rule, j) => {
+    const label = `Row ${index + 1} rule ${j + 1}`;
+    const is = el("input", { type: "text", value: rule.is, placeholder: "Airtable value", list: airtableList, maxlength: "200", "aria-label": `${label} Airtable value` });
+    is.addEventListener("input", () => { rule.is = is.value; updateMappingBar(); });
+
+    const target = el("select", { "aria-label": `${label} maps to` }, [
+      el("option", { value: "" }, "Map to…"),
+      ...ruleTargets.map((g) =>
+        el("optgroup", { label: g.name }, g.fields.map((f) => el("option", { value: f.id, title: f.detail ?? "" }, f.detail ? `${f.label} (${f.detail.split(" · ")[0]})` : f.label)))
+      ),
+    ]);
+    const known = targetById(rule.target);
+    if (rule.target && !known) target.prepend(el("option", { value: rule.target }, rule.target.replace(/^product:metafield:/, "metafield ")));
+    target.value = rule.target ?? "";
+    target.addEventListener("change", () => { rule.target = target.value; renderMapping(); });
+
+    // A metafield with preset choices (and the template's own field) suggests its values.
+    const valueList = known?.choices?.length ? `rule-value-${row.id}-${j}` : null;
+    const placeholder = known?.id === "product:tags" ? "Tag to add" : known?.id === "product:templateSuffix" ? "Template name, e.g. blogger-shirt" : "Value";
+    const value = el("input", { type: "text", value: rule.value, placeholder, list: valueList, maxlength: "255", "aria-label": `${label} value` });
+    value.addEventListener("input", () => { rule.value = value.value; updateMappingBar(); });
+
+    const remove = el("button", { class: "link-button", type: "button", "aria-label": `Remove ${label}` }, "Remove");
+    remove.addEventListener("click", () => {
+      row.rules.splice(j, 1);
+      renderMapping();
+    });
+
+    return el("div", { class: "rule-line" }, [
+      el("span", { class: "rule-line__word" }, "If"),
+      is,
+      el("span", { class: "rule-line__word", "aria-hidden": "true" }, "→"),
+      target,
+      el("span", { class: "rule-line__word" }, "="),
+      value,
+      remove,
+      valueList ? el("datalist", { id: valueList }, known.choices.map((c) => el("option", { value: c }))) : null,
+    ]);
+  });
+
+  const add = el("button", { class: "button button--ghost button--small", type: "button" }, "Add rule");
+  add.addEventListener("click", () => {
+    const last = row.rules[row.rules.length - 1];
+    // A new rule usually writes to the same Shopify field as the one above it.
+    row.rules.push({ is: "", target: last?.target ?? "", value: "" });
+    renderMapping();
+    document.querySelectorAll(`[aria-label="Row ${index + 1} rule ${row.rules.length} Airtable value"]`)[0]?.focus();
+  });
+
+  return el("div", { class: "mapping-rules" }, [
+    el("div", { class: "rule-line rule-line--head", "aria-hidden": "true" }, [el("span", {}, ""), el("span", {}, "Airtable value"), el("span", {}, ""), el("span", {}, "Map to"), el("span", {}, ""), el("span", {}, "Value"), el("span", {}, "")]),
+    ...lines,
+    airtableList ? el("datalist", { id: airtableList }, source.choices.map((c) => el("option", { value: c }))) : null,
+    el("div", { class: "mapping-rules__foot" }, [add, el("small", { class: "muted" }, "Values match whatever their case. Tags are only added; a template is only changed from the default or another rule's template; other fields are overwritten. A list field gets the value of every rule met, any other field the first one's.")]),
+  ]);
 }
 
 function updateMappingBar() {
   const n = state.mappingRows.length;
   $("#mapping-count").textContent = `${n} mapping${n === 1 ? "" : "s"}`;
-  const incomplete = state.mappingRows.some((r) => !r.sourceFieldId || !r.target || !r.mode);
+  const incomplete = state.mappingRows.some((r) =>
+    !r.sourceFieldId || !r.mode ||
+    (r.mode === "rules" ? !r.rules?.length || r.rules.some((x) => !x.is.trim() || !x.target || !x.value.trim()) : !r.target)
+  );
   const dirty = isMappingDirty();
   $("#mapping-save").disabled = !dirty || incomplete;
   $("#mapping-save").textContent = dirty ? "Save changes" : "Saved";
@@ -1070,7 +1153,7 @@ $("#mapping-save").addEventListener("click", async () => {
     const data = await api("/api/mappings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mappings: state.mappingRows }),
+      body: JSON.stringify({ mappings: state.mappingRows.map(rowForSave) }),
     });
     applyMapping(data);
     renderMapping();
@@ -1086,7 +1169,7 @@ $("#mapping-save").addEventListener("click", async () => {
 // Catalogue-wide jobs (functions/backfill.mjs). The list refreshes itself while a job is running.
 const JOB_LABELS = { audit: "Audit Shopify", group: "Re-sync existing products", "subcategory-migrate": "Migrate old subcategories" };
 const JOB_STATUS = { queued: "Starting", running: "Running", done: "Done", failed: "Failed", stopped: "Stopped" };
-const backfill = { jobs: [], openId: null, detail: null, timer: null, migrationLoaded: false };
+const backfill = { jobs: [], openId: null, detail: null, timer: null };
 
 function setBackfillStatus(text, kind = "", where = "#backfill-status") {
   const s = $(where);
@@ -1102,7 +1185,6 @@ async function loadBackfill() {
       $("#backfill-targets").replaceChildren(el("p", { class: "status status--error" }, error.message));
     });
   }
-  if (!backfill.migrationLoaded) loadMigrationTable();
   await refreshJobs();
 }
 
@@ -1120,29 +1202,31 @@ async function refreshJobs() {
   if (state.signedIn && currentRoute() === "backfill" && backfill.jobs.some(isActive)) backfill.timer = setTimeout(refreshJobs, 5000);
 }
 
-// The fields a re-sync can write: the group always, the bundle rules, and each saved mapping's Shopify field.
+// The fields a re-sync can write: the group always, then each Shopify field a saved mapping or rule writes to.
 function renderBackfillTargets() {
   const box = $("#backfill-targets");
   const m = state.mapping;
   if (!m) return;
-  const option = (name, label, note, { checked = false, disabled = false } = {}) =>
-    el("label", { class: "check" }, [
-      el("input", { type: "checkbox", name, value: name === "target" ? note.value : "on", checked: checked || null, disabled: disabled || null }),
-      el("span", {}, [label, note.text ? el("small", {}, note.text) : null]),
-    ]);
   // Suggestions for the migration's metafield boxes.
   const metafields = m.targets.find((g) => g.name === "Product metafields")?.fields ?? [];
   $("#backfill-metafields").replaceChildren(...metafields.map((f) => el("option", { value: f.id.replace("product:metafield:", "") }, f.label)));
+
+  // Shopify field -> where its values come from.
+  const from = new Map();
+  const add = (target, text) => from.set(target, [...(from.get(target) ?? []), text]);
+  for (const x of m.mappings) {
+    if (x.sourceFieldId.startsWith("extract:")) continue;
+    if (x.mode === "rules") for (const r of x.rules) add(r.target, `rules on ${sourceName(x.sourceFieldId)}`);
+    else add(x.target, sourceName(x.sourceFieldId));
+  }
+  const option = (label, note, attrs) =>
+    el("label", { class: "check" }, [el("input", { type: "checkbox", ...attrs }), el("span", {}, [label, note ? el("small", {}, note) : null])]);
   const group = m.builtIn?.find((b) => b.metafield.endsWith(".related_product_group"));
-  const targets = [...new Set(m.mappings.filter((x) => !x.sourceFieldId.startsWith("extract:")).map((x) => x.target))];
   box.replaceChildren(
-    option("group", "Related product group", { text: group && group.status !== "ready" ? BUILTIN_STATUS[group.status](group) : "Always written" }, { checked: true, disabled: true }),
-    option("rules", "Bundle template and tag", { text: "Blogger and Tencel Basic products, as set in Mapping" }, { checked: true }),
-    ...targets.map((t) => {
-      const known = targetById(t);
-      const sources = m.mappings.filter((x) => x.target === t).map((x) => sourceName(x.sourceFieldId)).join(", ");
-      return option("target", known?.label ?? t, { value: t, text: `From ${sources}` });
-    })
+    option("Related product group", group && group.status !== "ready" ? BUILTIN_STATUS[group.status](group) : "Always written", { checked: true, disabled: true }),
+    ...[...from].map(([target, sources]) =>
+      option(targetById(target)?.label ?? target, `From ${[...new Set(sources)].join(", ")}`, { name: "target", value: target })
+    )
   );
 }
 
@@ -1188,57 +1272,15 @@ $("#backfill-group").addEventListener("submit", (e) => {
   e.preventDefault();
   const form = e.currentTarget;
   const targets = [...form.querySelectorAll("input[name=target]:checked")].map((i) => i.value);
-  startJob(form, "group", { rules: Boolean(form.elements.rules?.checked), targets });
+  startJob(form, "group", { targets });
 });
 
 $("#backfill-migrate").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.currentTarget;
-  // The job uses the saved table, so save what's in the box first.
-  if (!(await saveMigrationTable())) return;
   const from = form.elements.from.value.split(",").map((x) => x.trim()).filter(Boolean);
   startJob(form, "subcategory-migrate", { from, to: form.elements.to.value.trim(), split: form.elements.split.checked });
 });
-
-// "old = New; Other" lines <-> { "old": ["New", "Other"] }
-function parseMigrationTable(text) {
-  const table = {};
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  for (const [i, line] of lines.entries()) {
-    const at = line.indexOf("=");
-    if (at < 1) throw new Error(`Line ${i + 1} needs an old value, then =`);
-    table[line.slice(0, at).trim()] = line.slice(at + 1).split(";").map((x) => x.trim()).filter(Boolean);
-  }
-  return table;
-}
-
-const formatMigrationTable = (table) => Object.entries(table).map(([from, to]) => `${from} = ${[].concat(to).join("; ")}`).join("\n");
-
-async function loadMigrationTable() {
-  try {
-    const data = await api("/api/backfill/migration");
-    $("#backfill-migrate").elements.table.value = formatMigrationTable(data.table);
-    backfill.migrationLoaded = true;
-    setBackfillStatus(data.updatedAt ? `Table last saved ${new Date(data.updatedAt).toLocaleString("en-AU")}${data.updatedBy ? ` by ${data.updatedBy}` : ""}.` : "No table saved yet.", "", "#backfill-table-status");
-  } catch (error) {
-    setBackfillStatus(error.message, "error", "#backfill-table-status");
-  }
-}
-
-async function saveMigrationTable() {
-  try {
-    const table = parseMigrationTable($("#backfill-migrate").elements.table.value);
-    if (Object.keys(table).length === 0) throw new Error("Add at least one line to the table");
-    await api("/api/backfill/migration", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table }) });
-    setBackfillStatus(`Table saved: ${Object.keys(table).length} old values.`, "success", "#backfill-table-status");
-    return true;
-  } catch (error) {
-    setBackfillStatus(error.message, "error", "#backfill-table-status");
-    return false;
-  }
-}
-
-$("#backfill-table-save").addEventListener("click", saveMigrationTable);
 
 function countsText(counts) {
   const entries = Object.entries(counts ?? {});
@@ -1247,7 +1289,7 @@ function countsText(counts) {
 
 function jobSummary(j) {
   if (j.type === "group") {
-    const parts = ["group", j.options?.rules ? "bundle template and tag" : null, ...(j.options?.targets ?? []).map((t) => targetById(t)?.label ?? t)];
+    const parts = ["group", ...(j.options?.targets ?? []).map((t) => (state.mapping && targetById(t)?.label) || t)];
     return parts.filter(Boolean).join(", ");
   }
   if (j.type === "subcategory-migrate") return `${[].concat(j.options?.from).join(", ")} → ${j.options?.to}`;

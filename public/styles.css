@@ -442,6 +442,19 @@ select:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
 .batch-item__badges { display: flex; align-items: center; gap: var(--gap-xs); }
 .batch-item__body .sync { margin: var(--gap-lg) 0 0; }
 
+/* Rules on a mapping row: If [Airtable value] → [Shopify field] = [value] */
+.mapping-row__note { font-size: var(--font-size--xs); }
+.mapping-rules { grid-column: 1 / -1; display: grid; gap: var(--gap-xs); padding: var(--gap-sm) var(--gap-lg); background: var(--color-surface); }
+.rule-line {
+  display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) 1rem minmax(0, 1.3fr) 1rem minmax(0, 1fr) 4.5rem;
+  gap: var(--gap-xs); align-items: center;
+}
+.rule-line input { width: 100%; font: inherit; font-size: var(--font-size--sm); padding: 0.6rem 0.75rem; }
+.rule-line__word { color: var(--color-muted); text-align: center; }
+.rule-line--head { font-size: var(--font-size--2xs); text-transform: uppercase; letter-spacing: var(--letter-spacing-md); color: var(--color-muted); }
+.mapping-rules__foot { display: flex; flex-wrap: wrap; gap: var(--gap-xs) var(--gap-lg); align-items: center; margin-top: var(--gap-xs); }
+.mapping-rules__foot small { flex: 1 1 20rem; }
+
 /* Backfill */
 .backfill-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: var(--gap-lg); margin-top: var(--gap-lg); }
 .backfill-card { display: flex; flex-direction: column; gap: var(--gap-sm); padding: var(--gap-lg); background: var(--color-surface); min-width: 0; }
@@ -489,4 +502,8 @@ select:focus { outline: 2px solid var(--color-black); outline-offset: 1px; }
   .mapping-row__arrow { display: none; }
   .mapping-row select, .mapping-row__prefix { grid-column: 1 / -1; }
   .mapping-row__prefix { grid-row: auto; }
+  .rule-line { grid-template-columns: 1fr auto; }
+  .rule-line > * { grid-column: 1 / -1; }
+  .rule-line .link-button { grid-column: 2; justify-self: end; }
+  .rule-line__word, .rule-line--head { display: none; }
 }

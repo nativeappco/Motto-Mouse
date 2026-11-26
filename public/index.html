@@ -117,6 +117,7 @@
         <div><dt>Merge</dt><dd>Add to what's in Shopify, e.g. extra tags. Text is appended. Nothing is added twice. In a JSON metafield, keys are added or updated and the rest are kept.</dd></div>
         <div><dt>Replace</dt><dd>Overwrite the Shopify value.</dd></div>
         <div><dt>New</dt><dd>Only fill the field if it's empty in Shopify.</dd></div>
+        <div><dt>Rules</dt><dd>If the Airtable field holds a value, write another value to the Shopify field you choose, e.g. if Sub-Category is Blogger, set the theme template to blogger-shirt and add a bundle tag. Rules that write to the new subcategories also serve as the table for migrating old subcategory values on the Backfill page.</dd></div>
       </dl>
       <p class="subdued">A JSON metafield can take any number of Airtable fields: map each one to it and they are saved together as a single object, keyed by Airtable field name. Empty fields are left out.</p>
       <p class="subdued">A mapping to Tags can have a prefix, which is put in front of each tag it adds: with the prefix “ReviewGroup: ”, the value 10511 becomes the tag “ReviewGroup: 10511”.</p>
@@ -133,7 +134,6 @@
       <p class="status" id="mapping-status" role="status" aria-live="polite"></p>
       <div id="mapping-rows"></div>
       <div id="mapping-builtin"></div>
-      <div id="mapping-rules"></div>
     </section>
 
     <!-- Backfill -->
@@ -162,7 +162,7 @@
 
         <form class="backfill-card" id="backfill-migrate">
           <h2 class="h5">Migrate old subcategories</h2>
-          <p class="subdued">Copies the values in the old subcategory metafield into the new one, through the table below. Values already in the new metafield are kept, and the old one isn't changed. Old values that aren't in the table are listed in the report.</p>
+          <p class="subdued">Copies the values in the old subcategory metafield into the new one, through the rules on the Mapping page that write to the new one: an old value that matches a rule's Airtable value becomes that rule's value. Values already in the new metafield are kept, and the old one isn't changed. Old values with no rule are listed in the report.</p>
           <label class="field">
             <span class="field__label">Old metafield (namespace.key; separate several with commas)</span>
             <input name="from" placeholder="custom.subcategory" autocomplete="off" spellcheck="false" list="backfill-metafields" required>
@@ -173,15 +173,8 @@
           </label>
           <datalist id="backfill-metafields"></datalist>
           <label class="check"><input type="checkbox" name="split"> An old value can hold several subcategories, separated by commas</label>
-          <label class="field">
-            <span class="field__label">Migration table</span>
-            <textarea name="table" rows="8" spellcheck="false" placeholder="elastic waist = Pants; Casual Pants&#10;wide-leg = Wide Leg&#10;old thing ="></textarea>
-            <small class="subdued">One old value per line, then = and its new value. Separate several new values with semicolons. Leave the right-hand side empty to drop a value.</small>
-          </label>
-          <p class="status" id="backfill-table-status" role="status" aria-live="polite"></p>
           <label class="check"><input type="checkbox" name="dryRun" checked> Dry run: report what would change and write nothing</label>
           <div class="backfill-card__actions">
-            <button class="button button--ghost" type="button" id="backfill-table-save">Save table</button>
             <button class="button" type="submit">Start</button>
           </div>
         </form>

@@ -1,7 +1,7 @@
 import { jsonValue } from "./mapping.mjs";
 
 // Mappings that are always on: the source data Product Pelican reads when it writes Motto's product copy, and
-// the related product group the theme links colourways by.
+// the related product group the theme links colourways by. Rules (further down) are set up in Mapping.
 // They need no setup in Mapping, only a metafield definition in Shopify for each (namespace.key, of `type`).
 // A mapping saved in Mapping for the same Shopify field takes over from the built-in one.
 export const NAMESPACE = "mmm";
@@ -61,10 +61,9 @@ function sourceId(names, byName) {
   return ids.length === 1 ? ids[0] : `${FIRST}${ids.join(",")}`;
 }
 
-// The Airtable field ids behind a mapping source, so they can be loaded with the record.
+// The Airtable field ids behind a "first of" source, so they can be loaded with the record.
 export function underlyingIds(sourceFieldId) {
   if (sourceFieldId.startsWith(FIRST)) return sourceFieldId.slice(FIRST.length).split(",");
-  if (sourceFieldId.startsWith(RULE)) return [...parseRuleSource(sourceFieldId).fieldIds.values()];
   return [];
 }
 
@@ -79,46 +78,39 @@ export function addFirstOfFields(record, sourceIds) {
 }
 
 // ---------- Rules ----------
-// Values Mouse works out from a box rather than copying a field: Blogger and Tencel Basic products get their
-// bundle template and the tag the theme's "2 for $30" badge looks for (which used to come from Rex).
-// A value left as null switches that part of the rule off until it's known.
-//
-// To add another bundle: add a condition to CONDITIONS (the Airtable field and the value that marks the
-// product), then give its id a template in TEMPLATES and/or a tag in BUNDLE_TAGS. The template must exist in
-// the live theme (templates/product.<suffix>.json). The Mapping page lists the result.
-export const TEMPLATES = {
-  blogger: "blogger-shirt", // templates/product.blogger-shirt.json
-  tencel: "tencel-template", // templates/product.tencel-template.json
-};
-export const BUNDLE_TAGS = {
-  blogger: null, // the exact tag the theme's bundle badge expects on Blogger products
-  tencel: null, // the exact tag for Tencel Basic products
-};
+// A mapping in "rules" mode holds if-statements on its Airtable field, saved in Mapping:
+//   { sourceFieldId, mode: "rules", rules: [{ is: "Blogger", target: "product:templateSuffix", value: "blogger-shirt" }] }
+// When the field holds `is` (ignoring case and surrounding spaces; any item of a list), `value` is written to
+// `target`. Rules from every row that write to the same Shopify field become one mapping at sync time:
+// a list (tags, list metafields) gets the value of every rule met, any other field the first one's.
+const RULES = "rules:";
 
-// A box meets a condition when the Airtable field holds the value (ignoring case and surrounding spaces).
-export const CONDITIONS = [
-  { id: "blogger", field: "Sub-Category", is: "Blogger" },
-  { id: "tencel", field: "Fabric Tag", is: "Tencel Basic" },
-];
+// Rules only ever add tags; a template is only changed from the default or another rule's template (so one chosen
+// by hand stays); anything else is overwritten.
+export const ruleWriteMode = (target) => (target === "product:tags" ? "merge" : "replace");
+const GUARDED = new Set(["product:templateSuffix"]);
 
-// `pick`: "first" writes the value of the first condition met (in CONDITIONS order), "all" writes every one.
-export const RULES = [
-  { key: "template", name: "Bundle template", target: "product:templateSuffix", mode: "replace", values: TEMPLATES, pick: "first" },
-  { key: "bundle-tags", name: "Bundle tag", target: "product:tags", mode: "merge", values: BUNDLE_TAGS, pick: "all" },
-];
+// Every Shopify field a saved mapping writes to (a rules row can write to several).
+export const mappingTargets = (m) => (m?.mode === "rules" ? (Array.isArray(m.rules) ? m.rules.map((r) => r?.target) : []) : [m?.target]);
 
-// A rule's source id names the Airtable field behind each condition: "rule:<key>:<condition>=<field id>,…".
-const RULE = "rule:";
-
-function ruleSourceId(rule, byName) {
-  const pairs = CONDITIONS.map((c) => byName.get(c.field)).map((f, i) => (f ? `${CONDITIONS[i].id}=${f.id}` : null));
-  return `${RULE}${rule.key}:${pairs.filter(Boolean).join(",")}`;
-}
-
-function parseRuleSource(id) {
-  const [key, list = ""] = id.slice(RULE.length).split(":");
-  const fieldIds = new Map(list.split(",").filter(Boolean).map((pair) => pair.split("=")));
-  return { rule: RULES.find((r) => r.key === key), fieldIds };
+export function ruleMappings(saved) {
+  const byTarget = new Map();
+  for (const m of saved) {
+    if (m.mode !== "rules") continue;
+    for (const r of m.rules ?? []) {
+      if (!byTarget.has(r.target)) byTarget.set(r.target, []);
+      byTarget.get(r.target).push({ fieldId: m.sourceFieldId, is: r.is, value: r.value });
+    }
+  }
+  return [...byTarget].map(([target, rules]) => ({
+    id: `${RULES}${target}`,
+    sourceFieldId: `${RULES}${target}`,
+    target,
+    mode: ruleWriteMode(target),
+    rule: { name: "Rules" },
+    rules,
+    ...(GUARDED.has(target) ? { replaces: [...new Set(rules.map((r) => r.value))] } : {}),
+  }));
 }
 
 const comparable = (s) => String(s ?? "").trim().toLowerCase();
@@ -128,45 +120,33 @@ function texts(value) {
   if (value == null) return [];
   if (Array.isArray(value)) return value.flatMap(texts);
   if (typeof value === "object") return texts(value.name ?? null);
-  return [String(value)];
+  return [String(value)].filter((t) => t.trim());
 }
 
-// What a rule writes for this record: { value, reason } (value null with the reason when there's nothing to write).
-export function ruleValue(rule, record, fieldIds) {
-  const met = CONDITIONS.filter((c) => {
-    const field = record.fields.find((f) => f.id === fieldIds.get(c.id));
-    return texts(field?.value).some((t) => comparable(t) === comparable(c.is));
-  });
-  if (met.length === 0) return { value: null, reason: `Not a ${CONDITIONS.map((c) => c.is).join(" or ")} product` };
-  const chosen = rule.pick === "first" ? met.slice(0, 1) : met;
-  const values = chosen.map((c) => rule.values[c.id]).filter(Boolean);
-  if (values.length === 0) return { value: null, reason: `${rule.name} for ${chosen.map((c) => c.is).join(" and ")} isn't set in Mouse yet` };
-  return { value: rule.pick === "first" ? values[0] : values, reason: null };
-}
-
-// Adds a field to the record for each rule source in `sourceIds`, holding what the rule writes.
-export function addRuleFields(record, sourceIds) {
-  for (const id of new Set(sourceIds)) {
-    if (!id.startsWith(RULE)) continue;
-    const { rule, fieldIds } = parseRuleSource(id);
-    if (!rule) continue;
-    const { value, reason } = ruleValue(rule, record, fieldIds);
-    record.fields.push({ id, name: rule.name, value, emptyReason: reason });
+// What a rules mapping writes for this record: { value (the values of the rules met, or null), reason }.
+export function ruleValue(rules, record) {
+  const field = (id) => record.fields.find((f) => f.id === id);
+  const out = [];
+  for (const r of rules) {
+    const met = texts(field(r.fieldId)?.value).some((t) => comparable(t) === comparable(r.is));
+    if (met && !out.some((v) => comparable(v) === comparable(r.value))) out.push(r.value);
   }
+  if (out.length) return { value: out, reason: null };
+  const held = [...new Set(rules.map((r) => r.fieldId))].flatMap((id) => texts(field(id)?.value));
+  return { value: null, reason: held.length ? `No rule for “${[...new Set(held)].join(", ")}”` : "The Airtable field is empty" };
 }
 
-// A rule that replaces a value (the template) only changes the default or another of its own values, so a
-// template someone chose by hand (a pre-order page, say) is left alone.
-export function ruleMappings(table) {
-  const byName = new Map(table.fields.map((f) => [f.name.trim(), f]));
-  return RULES.map((rule) => ({
-    id: `rule:${rule.key}`,
-    sourceFieldId: ruleSourceId(rule, byName),
-    target: rule.target,
-    mode: rule.mode,
-    rule: { name: rule.name },
-    ...(rule.mode === "replace" ? { replaces: Object.values(rule.values).filter(Boolean) } : {}),
-  }));
+// The Airtable fields the rules mappings read, so they're loaded with the record.
+export const ruleFieldIds = (mappings) => mappings.flatMap((m) => m.rules?.map((r) => r.fieldId) ?? []);
+
+// Adds a field to the record for each rules mapping, holding what its rules write.
+export function addRuleFields(record, mappings) {
+  for (const m of mappings) {
+    if (!m.rules) continue;
+    const names = [...new Set(m.rules.map((r) => record.fields.find((f) => f.id === r.fieldId)?.name).filter(Boolean))];
+    const { value, reason } = ruleValue(m.rules, record);
+    record.fields.push({ id: m.sourceFieldId, name: `Rules on ${names.join(", ") || "a missing field"}`, value, emptyReason: reason });
+  }
 }
 
 // ---------- Mappings ----------
@@ -185,36 +165,17 @@ export function builtinMappings(table) {
   });
 }
 
-// A rule gives way to saved mappings on its Shopify field, unless they all add to it as the rule does (tags).
-function ruleKept(rule, saved) {
-  const same = saved.filter((m) => m.target === rule.target);
-  return same.length === 0 || (rule.mode === "merge" && same.every((m) => m.mode === "merge"));
-}
-
-// Every mapping a sync applies: the built-in ones, those saved in Mapping, then the rules.
+// Every mapping a sync applies: the built-in ones, those saved in Mapping, then one per Shopify field the rules
+// write to. A built-in gives way to anything saved for its Shopify field.
 export function withBuiltins(saved, table) {
-  const taken = new Set(saved.map((m) => m.target));
-  return [
-    ...builtinMappings(table).filter((m) => !taken.has(m.target)),
-    ...saved,
-    ...ruleMappings(table).filter((m) => ruleKept(m, saved)),
-  ];
-}
-
-// The rules as the Mapping page lists them.
-export function describeRules(saved) {
-  return RULES.map((rule) => ({
-    name: rule.name,
-    target: rule.target,
-    adds: rule.mode === "merge",
-    status: ruleKept(rule, saved) ? (CONDITIONS.some((c) => rule.values[c.id]) ? "ready" : "waiting") : "overridden",
-    when: CONDITIONS.map((c) => ({ field: c.field, is: c.is, value: rule.values[c.id] })),
-  }));
+  const direct = saved.filter((m) => m.mode !== "rules");
+  const taken = new Set(saved.flatMap(mappingTargets));
+  return [...builtinMappings(table).filter((m) => !taken.has(m.target)), ...direct, ...ruleMappings(saved)];
 }
 
 // The built-in mappings as the Mapping page lists them, with where each one stands in Shopify.
 export function describeBuiltins(saved, definitions) {
-  const taken = new Set(saved.map((m) => m.target));
+  const taken = new Set(saved.flatMap(mappingTargets));
   return BUILTINS.map((b) => {
     const namespace = b.namespace ?? NAMESPACE;
     const definition = definitions?.product.find((d) => d.namespace === namespace && d.key === b.key);

@@ -6,17 +6,13 @@ import {
   addFirstOfFields,
   addRuleFields,
   BUILTINS,
-  BUNDLE_TAGS,
   builtinMappings,
   builtinTarget,
   describeBuiltins,
-  describeRules,
   ruleMappings,
-  TEMPLATES,
-  underlyingIds,
   withBuiltins,
 } from "../netlify/lib/builtin-mappings.mjs";
-import { colourwayKey, GROUP_TARGET, groupMappings, metafieldItems, migrateValues, newReport, note, reportCsv, splitItems } from "../netlify/lib/backfill.mjs";
+import { colourwayKey, GROUP_TARGET, groupMappings, metafieldItems, migrateValues, migrationTable, newReport, note, reportCsv, splitItems } from "../netlify/lib/backfill.mjs";
 import { measurementLines } from "../netlify/lib/measurements.mjs";
 import { EXTRACTS, extractSources, firstPdf, promptHash, sectionText, sourceText } from "../netlify/lib/pdf-extract.mjs";
 import { applyChanges, buildRequests, skuMatches } from "../netlify/lib/shopify-products.mjs";
@@ -621,100 +617,127 @@ test("a list metafield with choices takes the known values and says why when non
 });
 
 // ---------- Rules ----------
-// Sets the rule constants for one test, as they will be once Motto's template names and tag are known.
-function withRuleValues(fn) {
-  const saved = [{ ...TEMPLATES }, { ...BUNDLE_TAGS }];
-  Object.assign(TEMPLATES, { blogger: "blogger", tencel: "tencel" });
-  Object.assign(BUNDLE_TAGS, { blogger: "bundle-blogger", tencel: "bundle-tencel" });
-  try {
-    return fn();
-  } finally {
-    Object.assign(TEMPLATES, saved[0]);
-    Object.assign(BUNDLE_TAGS, saved[1]);
-  }
-}
+// Motto's bundle rules, as they're set up in Mapping: Sub-Category (fldId5) and Fabric Tag (fldFab4).
+const bundleRules = [
+  {
+    id: "sub",
+    sourceFieldId: "fldId5",
+    target: null,
+    mode: "rules",
+    rules: [
+      { is: "Blogger", target: "product:templateSuffix", value: "blogger-shirt" },
+      { is: "Blogger", target: "product:tags", value: "bundle-blogger" },
+    ],
+  },
+  {
+    id: "fabric",
+    sourceFieldId: "fldFab4",
+    target: null,
+    mode: "rules",
+    rules: [
+      { is: "Tencel Basic", target: "product:templateSuffix", value: "tencel-template" },
+      { is: "Tencel Basic", target: "product:tags", value: "bundle-tencel" },
+    ],
+  },
+];
 
-// The box's Sub-Category (fldId5) and Fabric Tag (fldFab4), with each rule's field added as a sync adds it.
-function ruleBox(subCategory, fabricTag) {
+function ruleBox(subCategory, fabricTag, saved = bundleRules) {
   const box = { fields: [{ id: "fldId5", name: "Sub-Category", value: subCategory }, { id: "fldFab4", name: "Fabric Tag", value: fabricTag }] };
-  addRuleFields(box, ruleMappings(boxTable).map((m) => m.sourceFieldId));
+  addRuleFields(box, ruleMappings(saved));
   return box;
 }
 
-const ruleRows = (box, p = product(), extra = []) => buildPreview(box, p, withBuiltins(extra, boxTable).filter((m) => m.rule || extra.includes(m)), definitions);
+const ruleRows = (box, p = product(), saved = bundleRules, defs = definitions) =>
+  buildPreview(box, p, withBuiltins(saved, boxTable).filter((m) => !m.builtin), defs);
 
-test("a rule loads the Airtable fields its conditions read", () => {
-  const [template] = ruleMappings(boxTable);
-  assert.equal(template.sourceFieldId, "rule:template:blogger=fldId5,tencel=fldFab4");
-  assert.deepEqual(underlyingIds(template.sourceFieldId), ["fldId5", "fldFab4"]);
+test("rules from every row become one mapping per Shopify field, tags only being added to", () => {
+  const mappings = ruleMappings(bundleRules);
+  assert.deepEqual(mappings.map((m) => [m.target, m.mode]), [["product:templateSuffix", "replace"], ["product:tags", "merge"]]);
+  assert.deepEqual(mappings[0].rules.map((r) => r.fieldId), ["fldId5", "fldFab4"]);
+  assert.deepEqual(mappings[0].replaces, ["blogger-shirt", "tencel-template"]);
 });
 
-test("Blogger and Tencel Basic products get their bundle template and tag", () =>
-  withRuleValues(() => {
-    const blogger = ruleRows(ruleBox(["Blogger"], []));
-    assert.deepEqual(blogger.changes.map((c) => [c.path, c.value]), [["templateSuffix", "blogger"], ["tags", ["tops", "lmtbyb", "bundle-blogger"]]]);
+test("Blogger and Tencel Basic products get their bundle template and tag", () => {
+  const blogger = ruleRows(ruleBox(["Blogger"], []));
+  assert.deepEqual(blogger.changes.map((c) => [c.path, c.value]), [["templateSuffix", "blogger-shirt"], ["tags", ["tops", "lmtbyb", "bundle-blogger"]]]);
 
-    // Fabric Tag choices can have a trailing space in Airtable.
-    const tencel = ruleRows(ruleBox([], [" tencel basic "]));
-    assert.deepEqual(tencel.changes.map((c) => c.value), ["tencel", ["tops", "lmtbyb", "bundle-tencel"]]);
+  // Fabric Tag choices can have a trailing space in Airtable, and case doesn't matter.
+  const tencel = ruleRows(ruleBox([], [" tencel basic "]));
+  assert.deepEqual(tencel.changes.map((c) => c.value), ["tencel-template", ["tops", "lmtbyb", "bundle-tencel"]]);
 
-    // Both: the Blogger template wins, and both tags are added.
-    const both = ruleRows(ruleBox(["Blogger"], ["Tencel Basic"]));
-    assert.deepEqual(both.changes.map((c) => c.value), ["blogger", ["tops", "lmtbyb", "bundle-blogger", "bundle-tencel"]]);
-  }));
+  // Both: the first row's template wins, and both tags are added.
+  const both = ruleRows(ruleBox(["Blogger"], ["Tencel Basic"]));
+  assert.deepEqual(both.changes.map((c) => c.value), ["blogger-shirt", ["tops", "lmtbyb", "bundle-blogger", "bundle-tencel"]]);
+});
 
-test("other products keep their template and tags", () =>
-  withRuleValues(() => {
+test("other products keep their template and tags, and the preview says why", () => {
+  const p = product();
+  p.values.templateSuffix = "special";
+  const { rows, changes } = ruleRows(ruleBox(["Harlow"], []), p);
+  assert.equal(changes.length, 0);
+  assert.deepEqual(rows.map((r) => r.reason), ["No rule for “Harlow”", "No rule for “Harlow”"]);
+  assert.equal(ruleRows(ruleBox([], [])).rows[0].reason, "The Airtable field is empty");
+});
+
+test("the template rule replaces the default or another rule's template, and leaves a hand-chosen one alone", () => {
+  const templateOf = (current, sub, fabric) => {
     const p = product();
-    p.values.templateSuffix = "special";
-    const { rows, changes } = ruleRows(ruleBox(["Harlow"], ["Euro"]), p);
-    assert.equal(changes.length, 0);
-    assert.deepEqual(rows.map((r) => r.reason), ["Not a Blogger or Tencel Basic product", "Not a Blogger or Tencel Basic product"]);
-  }));
-
-test("Motto's bundle templates are set, and a rule part that isn't known yet writes nothing and says so", () => {
-  assert.deepEqual(TEMPLATES, { blogger: "blogger-shirt", tencel: "tencel-template" });
-  const saved = { ...BUNDLE_TAGS };
-  Object.assign(BUNDLE_TAGS, { blogger: null, tencel: null });
-  try {
-    const { rows, changes } = ruleRows(ruleBox(["Blogger"], []));
-    assert.deepEqual(changes.map((c) => c.value), ["blogger-shirt"]);
-    assert.equal(rows[1].reason, "Bundle tag for Blogger isn't set in Mouse yet");
-    assert.deepEqual(describeRules([]).map((r) => r.status), ["ready", "waiting"]);
-  } finally {
-    Object.assign(BUNDLE_TAGS, saved);
-  }
+    p.values.templateSuffix = current;
+    return ruleRows(ruleBox(sub, fabric), p).rows[0];
+  };
+  assert.deepEqual(templateOf(null, ["Blogger"], []).next, ["blogger-shirt"]);
+  assert.deepEqual(templateOf("tencel-template", ["Blogger"], []).next, ["blogger-shirt"]);
+  const preorder = templateOf("pre-order", ["Blogger"], []);
+  assert.equal(preorder.action, "skip");
+  assert.equal(preorder.reason, "Already set to “pre-order” in Shopify, which Mouse leaves alone");
 });
 
-test("the template rule replaces the default or another bundle template, and leaves a hand-chosen one alone", () =>
-  withRuleValues(() => {
-    const templateOf = (current, sub, fabric) => {
-      const p = product();
-      p.values.templateSuffix = current;
-      return ruleRows(ruleBox(sub, fabric), p).rows[0];
-    };
-    assert.deepEqual(templateOf(null, ["Blogger"], []).next, ["blogger"]);
-    assert.deepEqual(templateOf("tencel", ["Blogger"], []).next, ["blogger"]);
-    const preorder = templateOf("pre-order", ["Blogger"], []);
-    assert.equal(preorder.action, "skip");
-    assert.equal(preorder.reason, "Already set to “pre-order” in Shopify, which Mouse leaves alone");
-  }));
+test("the tag rules add to a saved tag mapping", () => {
+  const tags = { ...mapping("fldTags", "product:tags", "merge"), prefix: "ReviewGroup: " };
+  const box = ruleBox(["Blogger"], []);
+  box.fields.push({ id: "fldTags", name: "PO#", value: "10511" });
+  const { changes } = ruleRows(box, product(), [tags, ...bundleRules]);
+  assert.deepEqual(changes.find((c) => c.path === "tags").value, ["tops", "lmtbyb", "ReviewGroup: 10511", "bundle-blogger"]);
+});
 
-test("the tag rule adds to a saved tag mapping, and a saved template mapping replaces the template rule", () =>
-  withRuleValues(() => {
-    const tags = { ...mapping("fldTags", "product:tags", "merge"), prefix: "ReviewGroup: " };
-    const box = ruleBox(["Blogger"], []);
-    box.fields.push({ id: "fldTags", name: "PO#", value: "10511" });
-    const { changes } = ruleRows(box, product(), [tags]);
-    assert.deepEqual(changes.find((c) => c.path === "tags").value, ["tops", "lmtbyb", "ReviewGroup: 10511", "bundle-blogger"]);
+const SUBCATEGORIES = ["Pants", "Casual Pants", "Wide Leg", "Midi"];
+const subDefinitions = {
+  product: [{ namespace: "custom", key: "subcategories", name: "Subcategories", type: "list.single_line_text_field", choices: SUBCATEGORIES }],
+  variant: [],
+};
+const subRules = [
+  {
+    id: "subcat",
+    sourceFieldId: "fldId5",
+    target: null,
+    mode: "rules",
+    rules: [
+      { is: "elastic waist", target: "product:metafield:custom.subcategories", value: "Pants" },
+      { is: "elastic waist", target: "product:metafield:custom.subcategories", value: "Casual Pants" },
+      { is: "wide-leg", target: "product:metafield:custom.subcategories", value: "Wide Leg" },
+    ],
+  },
+];
 
-    const template = mapping("fldId4", "product:templateSuffix", "replace");
-    assert.equal(withBuiltins([template], boxTable).filter((m) => m.rule).length, 1);
-    assert.deepEqual(describeRules([template]).map((r) => r.status), ["overridden", "ready"]);
-    // A tag mapping that replaces the tags leaves no room for the rule.
-    assert.equal(withBuiltins([mapping("fldTags", "product:tags", "replace")], boxTable).filter((m) => m.rule).length, 1);
-  }));
+test("rules to a list metafield write every value met, as the list", () => {
+  const { changes } = ruleRows(ruleBox(["Elastic Waist", "wide-leg", "Pockets"], [], subRules), product(), subRules, subDefinitions);
+  assert.equal(changes[0].value, JSON.stringify(["Pants", "Casual Pants", "Wide Leg"]));
+});
 
+test("rules are checked when saved: a value has to be one of the metafield's choices, and spelled as Shopify has it", () => {
+  const table = { fields: [{ id: "fldId5", name: "Sub-Category" }] };
+  const row = (rules) => [{ id: "r1", sourceFieldId: "fldId5", mode: "rules", rules }];
+  const ok = validateMappings(row([{ is: " Elastic Waist ", target: "product:metafield:custom.subcategories", value: "casual pants" }]), table, subDefinitions);
+  assert.deepEqual(ok.mappings, [{ id: "r1", sourceFieldId: "fldId5", target: null, mode: "rules", rules: [{ is: "Elastic Waist", target: "product:metafield:custom.subcategories", value: "Casual Pants" }] }]);
+  assert.match(validateMappings(row([{ is: "x", target: "product:metafield:custom.subcategories", value: "Jeans" }]), table, subDefinitions).error, /isn't one of Subcategories's choices/);
+  assert.match(validateMappings(row([]), table, subDefinitions).error, /add at least one rule/);
+  assert.match(validateMappings(row([{ is: "x", target: "product:status", value: "ACTIVE" }]), table, subDefinitions).error, /can't write to Status/);
+  // Two rows of rules can write the same field; a plain mapping replacing it as well can't.
+  const both = [...row([{ is: "a", target: "product:templateSuffix", value: "t" }]), { id: "r2", sourceFieldId: "fldId5", mode: "rules", rules: [{ is: "b", target: "product:templateSuffix", value: "u" }] }];
+  assert.ok(validateMappings(both, table, subDefinitions).mappings);
+  const clash = [...both, { id: "r3", sourceFieldId: "fldId5", target: "product:templateSuffix", mode: "replace" }];
+  assert.match(validateMappings(clash, table, subDefinitions).error, /Use rules or a mapping for it, not both/);
+});
 
 // ---------- Backfill ----------
 test("repeat boxes of a colourway share a key, so only the newest is synced", () => {
@@ -724,19 +747,20 @@ test("repeat boxes of a colourway share a key, so only the newest is synced", ()
   assert.equal(colourwayKey({ "PATTERN#": ["60487A"] }), null);
 });
 
-test("the group backfill writes the group, and the rules only when asked", () => {
-  const all = withBuiltins([mapping("fldTags", "product:tags", "merge")], boxTable);
-  assert.deepEqual(all.filter(groupMappings(false)).map((m) => m.target), [GROUP_TARGET]);
-  assert.deepEqual(all.filter(groupMappings(true)).map((m) => m.target), [GROUP_TARGET, "product:templateSuffix", "product:tags"]);
-  assert.ok(all.filter(groupMappings(true)).every((m) => m.target === GROUP_TARGET || m.rule));
-});
-
-test("the re-sync can also write saved mappings, but never ones read from a tech pack PDF", () => {
+test("the re-sync writes the group plus the fields asked for, rules included, but never from a tech pack PDF", () => {
   const sub = mapping("fldSub", "product:metafield:custom.subcategories", "replace");
   const pdf = mapping("extract:tech-pack#design", "product:metafield:custom.design", "replace");
-  const all = withBuiltins([sub, pdf, mapping("fldTags", "product:tags", "merge")], boxTable);
-  const picked = all.filter(groupMappings(false, ["product:metafield:custom.subcategories", "product:metafield:custom.design"]));
-  assert.deepEqual(picked.map((m) => m.target), [GROUP_TARGET, "product:metafield:custom.subcategories"]);
+  const all = withBuiltins([sub, pdf, mapping("fldTags", "product:tags", "merge"), ...bundleRules], boxTable);
+  assert.deepEqual(all.filter(groupMappings()).map((m) => m.target), [GROUP_TARGET]);
+  const picked = all.filter(groupMappings(["product:metafield:custom.subcategories", "product:metafield:custom.design", "product:templateSuffix"]));
+  assert.deepEqual(picked.map((m) => m.target), [GROUP_TARGET, "product:metafield:custom.subcategories", "product:templateSuffix"]);
+});
+
+test("the migration table is the rules that write to the new metafield", () => {
+  assert.deepEqual(migrationTable([...subRules, ...bundleRules], "product:metafield:custom.subcategories"), {
+    "elastic waist": ["Pants", "Casual Pants"],
+    "wide-leg": ["Wide Leg"],
+  });
 });
 
 test("old values holding several subcategories can be split", () => {

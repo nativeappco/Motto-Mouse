@@ -3,8 +3,8 @@ import { BOX_TABLE_ID, getSchema } from "../lib/airtable.mjs";
 import { groupFields } from "../lib/settings.mjs";
 import { getMetafieldDefinitions, ShopifyNotConfigured } from "../lib/shopify.mjs";
 import { NATIVE_FIELDS, metafieldKind } from "../lib/shopify-fields.mjs";
-import { definitionsFor, loadMappings, modesFor, resolveTarget, saveMappings, validateMappings } from "../lib/mapping.mjs";
-import { describeBuiltins, describeRules } from "../lib/builtin-mappings.mjs";
+import { RULE_KINDS, definitionsFor, loadMappings, modesFor, resolveTarget, saveMappings, validateMappings } from "../lib/mapping.mjs";
+import { describeBuiltins, mappingTargets } from "../lib/builtin-mappings.mjs";
 import { extractSources } from "../lib/pdf-extract.mjs";
 
 // Airtable field → Shopify field mappings. GET returns the mappings plus everything the editor needs
@@ -44,12 +44,12 @@ export default async (req) => {
         ...m,
         // Flag mappings whose Airtable field or Shopify definition has since been removed.
         sourceMissing: !fieldIds.has(m.sourceFieldId),
-        targetMissing: Boolean(shopify.definitions) && !resolveTarget(m.target, shopify.definitions),
+        targetMissing: Boolean(shopify.definitions) && mappingTargets(m).some((t) => !resolveTarget(t, shopify.definitions)),
       })),
       sources: [
         ...groupFields(table).map((g) => ({
           name: g.name,
-          fields: g.fields.map((f) => ({ id: f.id, name: f.name.trim(), type: f.type })),
+          fields: g.fields.map((f) => ({ id: f.id, name: f.name.trim(), type: f.type, choices: selectChoices(f) })),
         })),
         // Text that Gemini reads out of a PDF attachment, mapped like any other field.
         ...(extracts.length
@@ -59,7 +59,6 @@ export default async (req) => {
       targets: buildTargets(shopify.definitions),
       // Applied on every sync without being set up here; listed so it's clear what else gets written.
       builtIn: describeBuiltins(saved.mappings, shopify.definitions),
-      rules: describeRules(saved.mappings),
     });
   } catch (err) {
     console.error("[mappings] error", err);
@@ -77,6 +76,12 @@ async function loadDefinitions(force, mappings) {
   }
 }
 
+// The options of a single or multiple select (or a lookup of one), offered when writing a rule's Airtable value.
+function selectChoices(field) {
+  const choices = field.options?.choices ?? field.options?.result?.options?.choices;
+  return Array.isArray(choices) ? choices.map((c) => c.name.trim()).filter(Boolean) : null;
+}
+
 function buildTargets(definitions) {
   const native = (owner, name) => ({
     name,
@@ -86,6 +91,8 @@ function buildTargets(definitions) {
       kind: f.kind,
       modes: modesFor(f.kind),
       prefixable: Boolean(f.prefixable),
+      ruleable: owner === "product" && RULE_KINDS.has(f.kind),
+      choices: f.choices ?? null,
     })),
   });
   const metafields = (owner, name) => ({
@@ -98,6 +105,8 @@ function buildTargets(definitions) {
         detail: `${d.namespace}.${d.key} · ${d.type}`,
         kind,
         modes: modesFor(kind),
+        ruleable: owner === "product" && RULE_KINDS.has(kind),
+        choices: d.choices ?? null,
       };
     }),
   });

@@ -160,7 +160,9 @@ export function buildPreview(record, product, mappings, definitions) {
         // Several Airtable fields can feed any other Shopify field (all in merge mode), so apply them in turn.
         group.forEach((m, i) => {
           if (!sources[i]) return reasons.push("The Airtable field no longer exists");
-          let incoming = withPrefix(coerce(sources[i].value, target.kind, target.choices), m.prefix);
+          // Rules give every value they found; a field that holds one value takes the first rule's.
+          const raw = m.rules && target.kind !== "list" ? sources[i].value?.[0] ?? null : sources[i].value;
+          let incoming = withPrefix(coerce(raw, target.kind, target.choices), m.prefix);
           if (incoming == null && sources[i].emptyReason) return reasons.push(sources[i].emptyReason);
           // Values that aren't among the metafield's choices are left out; say so when that leaves nothing.
           const unknown = incoming == null ? unknownChoices(sources[i].value, target.kind, target.choices) : [];
