@@ -146,10 +146,13 @@ export function coerce(value, kind, choices = null) {
   if (parts.length === 0) return null;
   switch (kind) {
     case "list": {
-      const items = parts.flatMap((p) => p.split(/[,\n]/)).map((s) => s.trim()).filter(Boolean);
+      let items = listItems(parts);
+      // A list metafield with a preset list of choices only takes those, spelled as Shopify has them.
+      if (choices?.length) items = matchChoices(items, choices).items;
       return items.length ? dedupe(items) : null;
     }
     case "text":
+      if (choices?.length) return matchChoices([parts.join(", ")], choices).items[0] ?? null;
       return parts.join(", ");
     case "multiline":
       return parts.join("\n");
@@ -171,6 +174,31 @@ export function coerce(value, kind, choices = null) {
       if (choices?.length) return choices.includes(parts[0]) ? parts[0] : null;
       return parts.join(", ");
   }
+}
+
+// ---------- Preset choices ----------
+// "Elastic Waist", "elastic-waist" and "ELASTIC WAIST " are one choice; so are "Shirts & Blouses" and "Shirts and Blouses".
+const choiceKey = (s) => String(s).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
+
+// Splits items to the choices they match (in Shopify's spelling) and the ones that match none.
+export function matchChoices(items, choices) {
+  const byKey = new Map(choices.map((c) => [choiceKey(c), c]));
+  const matched = [];
+  const unknown = [];
+  for (const item of items) {
+    const choice = byKey.get(choiceKey(item));
+    if (choice) matched.push(choice);
+    else unknown.push(item);
+  }
+  return { items: dedupe(matched), unknown };
+}
+
+// The values in an Airtable cell that aren't among a text or list target's preset choices.
+export function unknownChoices(value, kind, choices) {
+  if (!choices?.length || (kind !== "list" && kind !== "text")) return [];
+  const parts = flatten(value);
+  if (parts.length === 0) return [];
+  return matchChoices(kind === "list" ? listItems(parts) : [parts.join(", ")], choices).unknown;
 }
 
 // Puts a mapping's prefix in front of each item of a coerced list, e.g. "ReviewGroup: " + "10511".
@@ -246,6 +274,11 @@ function flatten(v) {
   }
   const s = String(v).trim();
   return s ? [s] : [];
+}
+
+// List items can also arrive as one comma- or line-separated string.
+function listItems(parts) {
+  return parts.flatMap((p) => p.split(/[,\n]/)).map((s) => s.trim()).filter(Boolean);
 }
 
 // Case-insensitive, first spelling wins (Shopify treats tags case-insensitively).

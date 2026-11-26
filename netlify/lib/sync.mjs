@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { applyMode, coerce, jsonValue, parseTarget, resolveTarget, withPrefix } from "./mapping.mjs";
+import { applyMode, coerce, jsonValue, parseTarget, resolveTarget, unknownChoices, withPrefix } from "./mapping.mjs";
 import { nativeField } from "./shopify-fields.mjs";
 
 // Works out what a sync would change: applies the saved mappings to an Airtable record and compares the
@@ -162,9 +162,16 @@ export function buildPreview(record, product, mappings, definitions) {
           if (!sources[i]) return reasons.push("The Airtable field no longer exists");
           let incoming = withPrefix(coerce(sources[i].value, target.kind, target.choices), m.prefix);
           if (incoming == null && sources[i].emptyReason) return reasons.push(sources[i].emptyReason);
+          // Values that aren't among the metafield's choices are left out; say so when that leaves nothing.
+          const unknown = incoming == null ? unknownChoices(sources[i].value, target.kind, target.choices) : [];
+          if (unknown.length) return reasons.push(`“${unknown[0]}” isn't one of this metafield's choices`);
           if (incoming != null && target.key === "countryCodeOfOrigin") incoming = incoming.toUpperCase();
           const problem = incoming == null ? null : rejected(target, incoming);
           if (problem) return reasons.push(problem);
+          // A rule's own values (bundle templates) can replace each other or the default, and nothing else.
+          if (incoming != null && m.replaces && value != null && value !== "" && !m.replaces.includes(value)) {
+            return reasons.push(`Already set to “${value}” in Shopify, which Mouse leaves alone`);
+          }
           const result = applyMode(m.mode, target.kind, value, incoming);
           if (result.action === "set") {
             value = result.value;

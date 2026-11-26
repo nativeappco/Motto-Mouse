@@ -42,6 +42,20 @@ export async function listRecords(tableId, { formula, fieldIds, maxRecords = 50,
   return data.records;
 }
 
+// One page of records, plus the offset to pass for the next page (null after the last one).
+export async function listRecordsPage(tableId, { formula, fieldIds, sort, offset = null, pageSize = 100 } = {}) {
+  const params = [
+    ["returnFieldsByFieldId", "true"],
+    ["pageSize", String(Math.min(pageSize, 100))],
+  ];
+  if (formula) params.push(["filterByFormula", formula]);
+  for (const id of fieldIds ?? []) params.push(["fields[]", id]);
+  if (sort) params.push(["sort[0][field]", sort.field], ["sort[0][direction]", sort.direction || "asc"]);
+  if (offset) params.push(["offset", offset]);
+  const data = await request(`${BASE_ID}/${tableId}`, params);
+  return { records: data.records, offset: data.offset ?? null };
+}
+
 export async function getRecord(tableId, recordId) {
   return request(`${BASE_ID}/${tableId}/${recordId}`, [["returnFieldsByFieldId", "true"]]);
 }

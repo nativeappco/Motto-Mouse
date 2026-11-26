@@ -4,7 +4,7 @@ import { groupFields } from "../lib/settings.mjs";
 import { getMetafieldDefinitions, ShopifyNotConfigured } from "../lib/shopify.mjs";
 import { NATIVE_FIELDS, metafieldKind } from "../lib/shopify-fields.mjs";
 import { definitionsFor, loadMappings, modesFor, resolveTarget, saveMappings, validateMappings } from "../lib/mapping.mjs";
-import { describeBuiltins } from "../lib/builtin-mappings.mjs";
+import { describeBuiltins, describeRules } from "../lib/builtin-mappings.mjs";
 import { extractSources } from "../lib/pdf-extract.mjs";
 
 // Airtable field → Shopify field mappings. GET returns the mappings plus everything the editor needs
@@ -59,6 +59,7 @@ export default async (req) => {
       targets: buildTargets(shopify.definitions),
       // Applied on every sync without being set up here; listed so it's clear what else gets written.
       builtIn: describeBuiltins(saved.mappings, shopify.definitions),
+      rules: describeRules(saved.mappings),
     });
   } catch (err) {
     console.error("[mappings] error", err);

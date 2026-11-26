@@ -5,6 +5,7 @@ const views = {
   lookup: $("#lookup-view"),
   settings: $("#settings-view"),
   mapping: $("#mapping-view"),
+  backfill: $("#backfill-view"),
 };
 const state = {
   signedIn: false,
@@ -26,7 +27,7 @@ const state = {
 // ---------- Routing ----------
 function currentRoute() {
   const r = location.hash.replace(/^#\/?/, "").split("?")[0];
-  return ["settings", "mapping"].includes(r) ? r : "lookup";
+  return ["settings", "mapping", "backfill"].includes(r) ? r : "lookup";
 }
 
 function show(view) {
@@ -46,6 +47,7 @@ function route() {
     loadSettings();
     loadPrompt();
   } else if (view === "mapping") loadMapping();
+  else if (view === "backfill") loadBackfill();
   else $("#lookup-input").focus();
 }
 
@@ -898,6 +900,7 @@ function renderMapping() {
     ...rows
   );
   renderBuiltIn(m.builtIn ?? []);
+  renderRules(m.rules ?? []);
   updateMappingBar();
 }
 
@@ -916,7 +919,7 @@ function renderBuiltIn(builtIn) {
     ...(builtIn.length
       ? [
           el("h2", { class: "h5 settings-heading" }, "Built-in mappings"),
-          el("p", { class: "subdued" }, "Always sent to Shopify, overwriting what's there, so Product Pelican has the source data it writes from. Each needs a product metafield definition in Shopify with the namespace, key and type shown."),
+          el("p", { class: "subdued" }, "Always sent to Shopify, overwriting what's there: the source data Product Pelican writes from, and the group the theme links colourways by. Each needs a product metafield definition in Shopify with the namespace, key and type shown."),
           el("table", { class: "sync-table builtin-table" }, [
             el("thead", {}, el("tr", {}, ["Shopify metafield", "Sent from", "Status"].map((h) => el("th", { scope: "col" }, h)))),
             el("tbody", {}, builtIn.map((b) =>
@@ -924,6 +927,35 @@ function renderBuiltIn(builtIn) {
                 el("th", { scope: "row" }, [b.name, el("small", {}, `${b.metafield} · ${b.type}`)]),
                 el("td", {}, b.sources.join(" · ")),
                 el("td", { class: b.status === "ready" ? "" : "muted" }, BUILTIN_STATUS[b.status](b)),
+              ])
+            )),
+          ]),
+        ]
+      : [])
+  );
+}
+
+const RULE_STATUS = {
+  ready: () => "Ready",
+  waiting: (r) => `Waiting for the ${r.adds ? "tag" : "template name"} to be set in Mouse`,
+  overridden: () => "Replaced by a mapping above",
+};
+
+// Values Mouse works out from a box (builtin-mappings.mjs RULES), e.g. the bundle template for Blogger products.
+function renderRules(rules) {
+  $("#mapping-rules").replaceChildren(
+    ...(rules.length
+      ? [
+          el("h2", { class: "h5 settings-heading" }, "Built-in rules"),
+          el("p", { class: "subdued" }, "Set from the box's Sub-Category and Fabric Tag. Products that meet no condition are left as they are. Mouse only changes a template that's the default or one of these bundle templates, so a template chosen by hand in Shopify stays. Tags are only ever added."),
+          el("p", { class: "subdued" }, "To add another bundle, send Native App Co the Airtable field and value that mark the products (e.g. Fabric Tag is Tencel Denim), the theme template they should use and the tag the badge needs. The template has to exist in the live theme first."),
+          el("table", { class: "sync-table builtin-table" }, [
+            el("thead", {}, el("tr", {}, ["Shopify field", "When", "Status"].map((h) => el("th", { scope: "col" }, h)))),
+            el("tbody", {}, rules.map((r) =>
+              el("tr", {}, [
+                el("th", { scope: "row" }, [r.name, el("small", {}, r.adds ? "Adds a tag" : "Theme template")]),
+                el("td", {}, r.when.map((w) => `${w.field} is ${w.is} → ${w.value ? `“${w.value}”` : "not set yet"}`).join(" · ")),
+                el("td", { class: r.status === "ready" ? "" : "muted" }, RULE_STATUS[r.status](r)),
               ])
             )),
           ]),
@@ -1050,6 +1082,274 @@ $("#mapping-save").addEventListener("click", async () => {
 });
 
 // ---------- Shopify sync ----------
+// ---------- Backfill ----------
+// Catalogue-wide jobs (functions/backfill.mjs). The list refreshes itself while a job is running.
+const JOB_LABELS = { audit: "Audit Shopify", group: "Re-sync existing products", "subcategory-migrate": "Migrate old subcategories" };
+const JOB_STATUS = { queued: "Starting", running: "Running", done: "Done", failed: "Failed", stopped: "Stopped" };
+const backfill = { jobs: [], openId: null, detail: null, timer: null, migrationLoaded: false };
+
+function setBackfillStatus(text, kind = "", where = "#backfill-status") {
+  const s = $(where);
+  s.textContent = text;
+  s.className = `status${kind ? ` status--${kind}` : ""}`;
+}
+
+async function loadBackfill() {
+  renderBackfillTargets();
+  if (!state.mapping) {
+    // The re-sync offers the saved mappings, so the Mapping page's data is needed here too.
+    api("/api/mappings").then((data) => { applyMapping(data); renderBackfillTargets(); }).catch((error) => {
+      $("#backfill-targets").replaceChildren(el("p", { class: "status status--error" }, error.message));
+    });
+  }
+  if (!backfill.migrationLoaded) loadMigrationTable();
+  await refreshJobs();
+}
+
+const isActive = (j) => j.status === "queued" || j.status === "running";
+
+async function refreshJobs() {
+  clearTimeout(backfill.timer);
+  try {
+    backfill.jobs = (await api("/api/backfill")).jobs;
+    if (backfill.openId) backfill.detail = await api(`/api/backfill?id=${encodeURIComponent(backfill.openId)}`);
+    renderJobs();
+  } catch (error) {
+    setBackfillStatus(error.message, "error");
+  }
+  if (state.signedIn && currentRoute() === "backfill" && backfill.jobs.some(isActive)) backfill.timer = setTimeout(refreshJobs, 5000);
+}
+
+// The fields a re-sync can write: the group always, the bundle rules, and each saved mapping's Shopify field.
+function renderBackfillTargets() {
+  const box = $("#backfill-targets");
+  const m = state.mapping;
+  if (!m) return;
+  const option = (name, label, note, { checked = false, disabled = false } = {}) =>
+    el("label", { class: "check" }, [
+      el("input", { type: "checkbox", name, value: name === "target" ? note.value : "on", checked: checked || null, disabled: disabled || null }),
+      el("span", {}, [label, note.text ? el("small", {}, note.text) : null]),
+    ]);
+  // Suggestions for the migration's metafield boxes.
+  const metafields = m.targets.find((g) => g.name === "Product metafields")?.fields ?? [];
+  $("#backfill-metafields").replaceChildren(...metafields.map((f) => el("option", { value: f.id.replace("product:metafield:", "") }, f.label)));
+  const group = m.builtIn?.find((b) => b.metafield.endsWith(".related_product_group"));
+  const targets = [...new Set(m.mappings.filter((x) => !x.sourceFieldId.startsWith("extract:")).map((x) => x.target))];
+  box.replaceChildren(
+    option("group", "Related product group", { text: group && group.status !== "ready" ? BUILTIN_STATUS[group.status](group) : "Always written" }, { checked: true, disabled: true }),
+    option("rules", "Bundle template and tag", { text: "Blogger and Tencel Basic products, as set in Mapping" }, { checked: true }),
+    ...targets.map((t) => {
+      const known = targetById(t);
+      const sources = m.mappings.filter((x) => x.target === t).map((x) => sourceName(x.sourceFieldId)).join(", ");
+      return option("target", known?.label ?? t, { value: t, text: `From ${sources}` });
+    })
+  );
+}
+
+function sourceName(id) {
+  for (const g of state.mapping.sources) {
+    const f = g.fields.find((x) => x.id === id);
+    if (f) return f.name;
+  }
+  return "a missing Airtable field";
+}
+
+async function startJob(form, type, options) {
+  const button = form.querySelector("button[type=submit]");
+  button.disabled = true;
+  const dryRun = form.elements.dryRun ? form.elements.dryRun.checked : true;
+  if (!dryRun && !confirm(`${JOB_LABELS[type]} will write to Shopify for real. Start it?`)) {
+    button.disabled = false;
+    return;
+  }
+  setBackfillStatus("Starting…");
+  try {
+    const job = await api("/api/backfill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, dryRun, options }),
+    });
+    backfill.openId = job.id;
+    setBackfillStatus(`${JOB_LABELS[type]} started${job.dryRun ? " as a dry run" : ""}.`, "success");
+    await refreshJobs();
+  } catch (error) {
+    setBackfillStatus(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("#backfill-audit").addEventListener("submit", (e) => {
+  e.preventDefault();
+  startJob(e.currentTarget, "audit", {});
+});
+
+$("#backfill-group").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const targets = [...form.querySelectorAll("input[name=target]:checked")].map((i) => i.value);
+  startJob(form, "group", { rules: Boolean(form.elements.rules?.checked), targets });
+});
+
+$("#backfill-migrate").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  // The job uses the saved table, so save what's in the box first.
+  if (!(await saveMigrationTable())) return;
+  const from = form.elements.from.value.split(",").map((x) => x.trim()).filter(Boolean);
+  startJob(form, "subcategory-migrate", { from, to: form.elements.to.value.trim(), split: form.elements.split.checked });
+});
+
+// "old = New; Other" lines <-> { "old": ["New", "Other"] }
+function parseMigrationTable(text) {
+  const table = {};
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const [i, line] of lines.entries()) {
+    const at = line.indexOf("=");
+    if (at < 1) throw new Error(`Line ${i + 1} needs an old value, then =`);
+    table[line.slice(0, at).trim()] = line.slice(at + 1).split(";").map((x) => x.trim()).filter(Boolean);
+  }
+  return table;
+}
+
+const formatMigrationTable = (table) => Object.entries(table).map(([from, to]) => `${from} = ${[].concat(to).join("; ")}`).join("\n");
+
+async function loadMigrationTable() {
+  try {
+    const data = await api("/api/backfill/migration");
+    $("#backfill-migrate").elements.table.value = formatMigrationTable(data.table);
+    backfill.migrationLoaded = true;
+    setBackfillStatus(data.updatedAt ? `Table last saved ${new Date(data.updatedAt).toLocaleString("en-AU")}${data.updatedBy ? ` by ${data.updatedBy}` : ""}.` : "No table saved yet.", "", "#backfill-table-status");
+  } catch (error) {
+    setBackfillStatus(error.message, "error", "#backfill-table-status");
+  }
+}
+
+async function saveMigrationTable() {
+  try {
+    const table = parseMigrationTable($("#backfill-migrate").elements.table.value);
+    if (Object.keys(table).length === 0) throw new Error("Add at least one line to the table");
+    await api("/api/backfill/migration", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table }) });
+    setBackfillStatus(`Table saved: ${Object.keys(table).length} old values.`, "success", "#backfill-table-status");
+    return true;
+  } catch (error) {
+    setBackfillStatus(error.message, "error", "#backfill-table-status");
+    return false;
+  }
+}
+
+$("#backfill-table-save").addEventListener("click", saveMigrationTable);
+
+function countsText(counts) {
+  const entries = Object.entries(counts ?? {});
+  return entries.length ? entries.map(([k, n]) => `${k} ${n}`).join(" · ") : "—";
+}
+
+function jobSummary(j) {
+  if (j.type === "group") {
+    const parts = ["group", j.options?.rules ? "bundle template and tag" : null, ...(j.options?.targets ?? []).map((t) => targetById(t)?.label ?? t)];
+    return parts.filter(Boolean).join(", ");
+  }
+  if (j.type === "subcategory-migrate") return `${[].concat(j.options?.from).join(", ")} → ${j.options?.to}`;
+  return "Read only";
+}
+
+async function jobAction(body, done) {
+  try {
+    await api("/api/backfill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    setBackfillStatus(done, "success");
+  } catch (error) {
+    setBackfillStatus(error.message, "error");
+  }
+  refreshJobs();
+}
+
+function renderJobs() {
+  const jobs = backfill.jobs;
+  $("#backfill-jobs").replaceChildren(
+    jobs.length === 0
+      ? el("p", { class: "status" }, "No jobs yet.")
+      : el("table", { class: "sync-table backfill-jobs" }, [
+          el("thead", {}, el("tr", {}, ["Job", "Started", "Status", "Results", ""].map((h) => el("th", { scope: "col" }, h)))),
+          el("tbody", {}, jobs.map((j) => {
+            // A job not heard from in 20 minutes was cut off; the server lets it be resumed.
+            const stale = isActive(j) && Date.now() - Date.parse(j.updatedAt) > 20 * 60 * 1000;
+            const view = el("button", { class: "link-button", type: "button" }, backfill.openId === j.id ? "Hide" : "View");
+            view.addEventListener("click", () => {
+              backfill.openId = backfill.openId === j.id ? null : j.id;
+              backfill.detail = null;
+              refreshJobs();
+            });
+            const stop = isActive(j) && !stale ? el("button", { class: "link-button", type: "button" }, "Stop") : null;
+            stop?.addEventListener("click", () => jobAction({ stop: j.id }, "Stopping after the current page."));
+            const resume = ["failed", "stopped"].includes(j.status) || stale ? el("button", { class: "link-button", type: "button" }, "Resume") : null;
+            resume?.addEventListener("click", () => jobAction({ resume: j.id }, "Resumed from where it got to."));
+            return el("tr", {}, [
+              el("th", { scope: "row" }, [JOB_LABELS[j.type] ?? j.type, el("small", {}, `${j.dryRun && j.type !== "audit" ? "Dry run · " : ""}${jobSummary(j)}`)]),
+              el("td", {}, [new Date(j.createdAt).toLocaleString("en-AU"), el("small", {}, j.owner)]),
+              el("td", {}, [
+                el("span", { class: `pill ${j.status === "failed" ? "pill--error" : j.status === "done" ? "pill--yes" : "pill--change"}` }, stale ? "Stuck" : JOB_STATUS[j.status] ?? j.status),
+                j.error ? el("small", { class: "value-error" }, j.error) : null,
+              ]),
+              el("td", {}, countsText(j.counts)),
+              el("td", {}, [view, stop, resume]),
+            ]);
+          })),
+        ])
+  );
+  renderJobDetail();
+}
+
+const OUTCOME_ORDER = ["error", "would write", "written", "needs a choice", "no product", "unmapped", "invalid", "skipped", "unchanged", "older box"];
+
+function renderJobDetail() {
+  const d = backfill.detail;
+  if (!d || d.id !== backfill.openId) return $("#backfill-detail").replaceChildren();
+  const valueTable = (title, rows) =>
+    rows?.length
+      ? [
+          el("h3", { class: "h5" }, title),
+          el("table", { class: "sync-table" }, [
+            el("thead", {}, el("tr", {}, ["Value", "Products"].map((h) => el("th", { scope: "col" }, h)))),
+            el("tbody", {}, rows.slice(0, 100).map((r) => el("tr", {}, [el("td", {}, r.value), el("td", {}, String(r.products))]))),
+          ]),
+        ]
+      : [];
+  const audit = d.type === "audit" && d.result
+    ? [
+        el("p", {}, `${d.result.products} products read.`),
+        ...valueTable("Templates", d.result.templates),
+        ...valueTable("Bundle-like tags", d.result.tags),
+        ...d.result.metafields.flatMap((m) => valueTable(`${m.name} (${m.metafield} · ${m.type})`, m.values)),
+      ]
+    : [];
+  const lines = [...d.lines].sort((a, b) => OUTCOME_ORDER.indexOf(a.outcome) - OUTCOME_ORDER.indexOf(b.outcome));
+  const report = d.type !== "audit" && lines.length
+    ? [
+        el("h3", { class: "h5" }, `Report${d.truncated || d.lines.length === 200 ? " (first lines; download for all)" : ""}`),
+        el("table", { class: "sync-table" }, [
+          el("thead", {}, el("tr", {}, ["Product or box", "Outcome", "Change"].map((h) => el("th", { scope: "col" }, h)))),
+          el("tbody", {}, lines.map((l) =>
+            el("tr", {}, [
+              el("th", { scope: "row" }, [l.product ?? l.box ?? l.recordId ?? "", el("small", {}, [l.box, l.field].filter(Boolean).join(" · "))]),
+              el("td", {}, el("span", { class: `pill ${l.outcome === "error" ? "pill--error" : /writ/.test(l.outcome) ? "pill--change" : "pill--no"}` }, l.outcome)),
+              el("td", {}, [l.before || l.after ? `${l.before ?? "(empty)"} → ${l.after ?? "(empty)"}` : "", l.detail ? el("small", {}, l.detail) : null]),
+            ])
+          )),
+        ]),
+      ]
+    : [];
+  $("#backfill-detail").replaceChildren(
+    el("div", { class: "backfill-detail" }, [
+      el("h2", { class: "h5" }, `${JOB_LABELS[d.type]}${d.dryRun && d.type !== "audit" ? " (dry run)" : ""}`),
+      el("p", { class: "backfill-counts" }, Object.entries(d.counts ?? {}).map(([k, n]) => el("span", {}, `${k}: ${n}`))),
+      el("a", { href: `/api/backfill?id=${encodeURIComponent(d.id)}&format=csv` }, "Download the full report (CSV)"),
+      ...audit,
+      ...report,
+    ])
+  );
+}
+
 const MATCH_LABELS = { sku: "Matched by SKU", pattern: "Matched by pattern and colour", chosen: "Chosen" };
 
 // A block that matches one Airtable record to its Shopify product, previews what the saved mappings

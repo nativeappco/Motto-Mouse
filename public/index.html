@@ -21,6 +21,7 @@
     <nav class="header-actions" id="header-actions" hidden>
       <a class="nav-link" href="#/lookup" data-nav="lookup">Lookup</a>
       <a class="nav-link" href="#/mapping" data-nav="mapping">Mapping</a>
+      <a class="nav-link" href="#/backfill" data-nav="backfill">Backfill</a>
       <a class="nav-link" href="#/settings" data-nav="settings">Settings</a>
       <span class="header-user" id="header-user"></span>
       <button class="link-button" id="logout-button" type="button">Sign out</button>
@@ -132,6 +133,63 @@
       <p class="status" id="mapping-status" role="status" aria-live="polite"></p>
       <div id="mapping-rows"></div>
       <div id="mapping-builtin"></div>
+      <div id="mapping-rules"></div>
+    </section>
+
+    <!-- Backfill -->
+    <section class="page" id="backfill-view" hidden>
+      <h1 class="h2">Backfill</h1>
+      <p class="subdued">Jobs that work through the whole catalogue in the background. One runs at a time, and it keeps going if you leave this page. Jobs that write start as a dry run: check the report, then start the job again with &ldquo;Dry run&rdquo; unticked.</p>
+      <p class="status" id="backfill-status" role="status" aria-live="polite"></p>
+
+      <div class="backfill-forms">
+        <form class="backfill-card" id="backfill-audit">
+          <h2 class="h5">Audit Shopify</h2>
+          <p class="subdued">Reads every product and changes nothing. Counts the templates in use, tags that look like bundle tags, and the values held in subcategory, group and bundle metafields.</p>
+          <div class="backfill-card__actions"><button class="button" type="submit">Run audit</button></div>
+        </form>
+
+        <form class="backfill-card" id="backfill-group">
+          <h2 class="h5">Re-sync existing products</h2>
+          <p class="subdued">Goes through every box with a REX Description, newest first, and writes the fields ticked below to the product it matches. Only the newest box of a colourway is used. Boxes whose product has to be chosen by hand are listed in the report. Fields read from tech pack PDFs aren't offered.</p>
+          <fieldset class="backfill-fields">
+            <legend class="field__label">Fields</legend>
+            <div id="backfill-targets"><p class="status">Loading mappings…</p></div>
+          </fieldset>
+          <label class="check"><input type="checkbox" name="dryRun" checked> Dry run: report what would change and write nothing</label>
+          <div class="backfill-card__actions"><button class="button" type="submit">Start</button></div>
+        </form>
+
+        <form class="backfill-card" id="backfill-migrate">
+          <h2 class="h5">Migrate old subcategories</h2>
+          <p class="subdued">Copies the values in the old subcategory metafield into the new one, through the table below. Values already in the new metafield are kept, and the old one isn't changed. Old values that aren't in the table are listed in the report.</p>
+          <label class="field">
+            <span class="field__label">Old metafield (namespace.key; separate several with commas)</span>
+            <input name="from" placeholder="custom.subcategory" autocomplete="off" spellcheck="false" list="backfill-metafields" required>
+          </label>
+          <label class="field">
+            <span class="field__label">New metafield (a list of single line text with preset choices)</span>
+            <input name="to" placeholder="custom.subcategories" autocomplete="off" spellcheck="false" list="backfill-metafields" required>
+          </label>
+          <datalist id="backfill-metafields"></datalist>
+          <label class="check"><input type="checkbox" name="split"> An old value can hold several subcategories, separated by commas</label>
+          <label class="field">
+            <span class="field__label">Migration table</span>
+            <textarea name="table" rows="8" spellcheck="false" placeholder="elastic waist = Pants; Casual Pants&#10;wide-leg = Wide Leg&#10;old thing ="></textarea>
+            <small class="subdued">One old value per line, then = and its new value. Separate several new values with semicolons. Leave the right-hand side empty to drop a value.</small>
+          </label>
+          <p class="status" id="backfill-table-status" role="status" aria-live="polite"></p>
+          <label class="check"><input type="checkbox" name="dryRun" checked> Dry run: report what would change and write nothing</label>
+          <div class="backfill-card__actions">
+            <button class="button button--ghost" type="button" id="backfill-table-save">Save table</button>
+            <button class="button" type="submit">Start</button>
+          </div>
+        </form>
+      </div>
+
+      <h2 class="h5 settings-heading">Jobs</h2>
+      <div id="backfill-jobs"></div>
+      <div id="backfill-detail"></div>
     </section>
   </main>
 
